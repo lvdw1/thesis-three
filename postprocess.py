@@ -308,6 +308,104 @@ def raycast_for_state(car_x, car_z, car_heading, blue_edge, yellow_edge, max_dis
         blue_ray_distances.append(closest_distance)
     return yellow_ray_distances, blue_ray_distances
 
+def compute_ray_edge_intersection_distance(ray_origin, ray_direction, edge_points, max_distance=10.0):
+    """
+    Computes the intersection distance from a ray (origin, direction) with a given edge polyline.
+    The edge is given as a list of (x,z) points forming consecutive segments.
+    
+    Returns the smallest positive distance along the ray at which an intersection occurs,
+    or None if no intersection is found within max_distance.
+    """
+    best_t = max_distance
+    found = False
+    for i in range(len(edge_points) - 1):
+        seg_start = edge_points[i]
+        seg_end = edge_points[i + 1]
+        t_val = ray_segment_intersection(ray_origin, ray_direction, seg_start, seg_end)
+        if t_val is not None and t_val < best_t:
+            best_t = t_val
+            found = True
+    return best_t if found else None
+
+
+def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, ordered_yellow, max_width=10.0):
+    """
+    For each resampled centerline point (spaced at 1 m intervals), compute the local track width.
+    
+    The width is determined by:
+      - Computing the local tangent of the centerline.
+      - Defining a left normal (pointing toward the yellow edge) and a right normal (toward the blue edge).
+      - Casting a ray from the centerline point in the left normal direction to find the yellow edge intersection,
+        and in the right normal direction to find the blue edge intersection.
+      - The local width is the sum of the distances from the centerline to the yellow and blue edge intersections.
+    
+    Parameters:
+      - resampled_clx, resampled_clz: lists of x and z coordinates (resampled at every meter).
+      - ordered_blue: list of (x,z) points for the blue (right) track edge (ordered along the centerline).
+      - ordered_yellow: list of (x,z) points for the yellow (left) track edge.
+      - max_width: maximum distance to search for an intersection (used as a fallback if no intersection is found).
+    
+    Returns:
+      A list of dictionaries, each containing:
+         - "center": the centerline point (x, z)
+         - "width": the computed local track width (in meters)
+         - "blue_pt": the intersection point on the blue edge
+         - "yellow_pt": the intersection point on the yellow edge
+    """
+    results = []
+    pts = list(zip(resampled_clx, resampled_clz))
+    N = len(pts)
+    
+    for i in range(N):
+        # Compute a local tangent using central differences (with forward/backward for boundaries)
+        if i == 0:
+            dx = pts[i + 1][0] - pts[i][0]
+            dz = pts[i + 1][1] - pts[i][1]
+        elif i == N - 1:
+            dx = pts[i][0] - pts[i - 1][0]
+            dz = pts[i][1] - pts[i - 1][1]
+        else:
+            dx = pts[i + 1][0] - pts[i - 1][0]
+            dz = pts[i + 1][1] - pts[i - 1][1]
+        T_norm = math.hypot(dx, dz)
+        if T_norm == 0:
+            T = (1.0, 0.0)
+        else:
+            T = (dx / T_norm, dz / T_norm)
+        
+        # Define normals:
+        # Left normal (points toward the yellow edge) = (-T_y, T_x)
+        right_normal = (-T[1], T[0])
+        # Right normal (points toward the blue edge) = (T[1], -T[0])
+        left_normal = (T[1], -T[0])
+        
+        center = pts[i]
+        
+        # Cast rays to find intersections with the edges
+        d_yellow = compute_ray_edge_intersection_distance(center, left_normal, ordered_yellow, max_distance=max_width)
+        d_blue = compute_ray_edge_intersection_distance(center, right_normal, ordered_blue, max_distance=max_width)
+        
+        # Use max_width if no intersection is found (this is a fallback)
+        if d_yellow is None:
+            d_yellow = max_width
+        if d_blue is None:
+            d_blue = max_width
+        
+        # Compute the intersection points on each edge
+        yellow_pt = (center[0] + d_yellow * left_normal[0], center[1] + d_yellow * left_normal[1])
+        blue_pt = (center[0] + d_blue * right_normal[0], center[1] + d_blue * right_normal[1])
+        
+        width = d_yellow + d_blue
+        
+        results.append({
+            "center": center,
+            "width": width,
+            "yellow_pt": yellow_pt,
+            "blue_pt": blue_pt,
+        })
+        
+    return results
+
 # --------------------- Cubic Polynomial Fit ---------------------
 
 def fit_cubic_polynomial(front_points, domain=(-5, 20), num_samples=100):
@@ -323,7 +421,6 @@ def fit_cubic_polynomial(front_points, domain=(-5, 20), num_samples=100):
     return np.vstack((x_sample, z_sample)).T
 
 # --------------------- Animation Function ---------------------
-
 def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
                 heading_length=3.0,
                 front_distance_thresh=20.0,
@@ -331,11 +428,12 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
                 max_ray_distance=20.0):
     """
     Creates an animation showing:
-      - The track with cones and edges.
+      - The track with cones and track edges.
       - A moving car with heading and raycasting.
-      - Local centerline information based on resampled (equidistant) points.
-      - A cubic polynomial fit to the front centerline points.
-      - A subplot of curvature vs. local x.
+      - Local centerline points (visualized on the track).
+      - A bottom subplot showing the track width (distance between yellow and blue edges)
+        for each resampled centerline point that lies within 5 m behind to 20 m ahead
+        of the car's current projection on the centerline.
     """
     # Extract car data
     t = car_data["time"]
@@ -345,12 +443,12 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     yaw = np.deg2rad(yaw_deg)
 
     # Create figure with two subplots.
-    fig, (ax_track, ax_curv) = plt.subplots(2, 1, figsize=(8, 10),
+    fig, (ax_track, ax_width) = plt.subplots(2, 1, figsize=(8, 10),
                                              gridspec_kw={'height_ratios': [3, 1]})
     
     # --- Setup track (top) axes ---
     ax_track.set_aspect('equal', adjustable='box')
-    ax_track.set_title("Car Run with Rays, Track Edges & Cubic Polynomial Fit")
+    ax_track.set_title("Car Run with Rays & Track Edges")
     ax_track.set_xlabel("X")
     ax_track.set_ylabel("Z")
     
@@ -385,8 +483,6 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     blue_ray_lines = [ax_track.plot([], [], color='cyan', linestyle='--', lw=1)[0]
                       for _ in range(len(blue_angles))]
     
-    poly_line, = ax_track.plot([], [], 'k-', lw=2, label='Cubic Poly Fit')
-    
     # Set track axis limits.
     all_x = list(x_car) + [pt[0] for pt in blue_cones] + [pt[0] for pt in yellow_cones] + list(centerline_x)
     all_z = list(z_car) + [pt[1] for pt in blue_cones] + [pt[1] for pt in yellow_cones] + list(centerline_z)
@@ -396,16 +492,24 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         ax_track.set_ylim(min(all_z)-margin, max(all_z)+margin)
     ax_track.legend()
     
-    # --- Setup curvature (bottom) axes ---
-    ax_curv.set_title("Curvature vs. Local X")
-    ax_curv.set_xlabel("Local X (m)")
-    ax_curv.set_ylabel("Curvature (1/m)")
-    ax_curv.set_xlim(-5, 20)
-    ax_curv.set_ylim(-1, 1)
-    front_curv_line, = ax_curv.plot([], [], 'm.', label='Front Curvature')
-    behind_curv_line, = ax_curv.plot([], [], 'g.', label='Behind Curvature')
-    ax_curv.legend()
-
+    # --- Setup track width (bottom) axes ---
+    ax_width.set_title("Track Width vs. Local X")
+    ax_width.set_xlabel("Local X (m)")
+    ax_width.set_ylabel("Track Width (m)")
+    ax_width.set_xlim(-5, 20)
+    ax_width.set_ylim(0, 10)  # y-axis between 0 and 5 meters
+    track_width_line, = ax_width.plot([], [], 'bo-', label='Track Width')
+    ax_width.legend()
+    
+    # Precompute cumulative distances along the resampled centerline and the track widths for each centerpoint.
+    cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
+    # Use max_width=2.5 so that if no intersection is found, each side falls back to 2.5 m.
+    track_widths_all = compute_local_track_widths(centerline_x, centerline_z,
+                                                  ordered_blue, ordered_yellow,
+                                                  max_width=10)
+    centerline_pts = list(zip(centerline_x, centerline_z))
+    pts_array = np.array(centerline_pts)
+    
     def update(frame_idx):
         x_curr = x_car[frame_idx]
         z_curr = z_car[frame_idx]
@@ -417,13 +521,11 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         z_heading = z_curr + heading_length * math.sin(yaw_curr)
         heading_line.set_data([x_curr, x_heading], [z_curr, z_heading])
         
-        # Resampled centerline points are ased_pts, n_front=5, n_behind=20)
-        resampled_pts = list(zip(centerline_x, centerline_z))
+        # Visualize local centerline points on the track.
+        resampled_pts = centerline_pts  # already resampled at every meter
         front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
             x_curr, z_curr, yaw_curr, resampled_pts,
-            front_distance=5.0, behind_distance=20.0)
-        
-        # Update scatter plots on track axes.
+            front_distance=5.0, behind_distance=20.0)  # 20 m ahead and 5 m behind (note the parameter order)
         if global_front:
             front_scatter.set_offsets(np.array(global_front))
         else:
@@ -433,7 +535,7 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         else:
             behind_scatter.set_offsets(np.empty((0,2)))
         
-        # --------- Raycasting (unchanged) ----------
+        # --------- Raycasting for visualization ----------
         yellow_ray_dists, blue_ray_dists = raycast_for_state(
             x_curr, z_curr, yaw_curr, ordered_blue, ordered_yellow, max_distance=max_ray_distance)
         for i, d in enumerate(yellow_ray_dists):
@@ -447,26 +549,28 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
             end_z = z_curr + d * math.sin(ray_angle)
             blue_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
         
-        # --------- Cubic Polynomial Fit ----------
-        # if len(front_local) >= 4:
-        #     front_local_arr = np.array(front_local)  # (N,3): (x_local, z_local, curvature)
-        #     try:
-        #         poly_coeffs = np.polyfit(front_local_arr[:, 0], front_local_arr[:, 1], 3)
-        #         poly = np.poly1d(poly_coeffs)
-        #         xs_sample = np.linspace(-5, 20, 100)
-        #         zs_sample = poly(xs_sample)
-        #         # Transform local (xs, zs) back to global.
-        #         global_x = x_curr + xs_sample * math.cos(yaw_curr) - zs_sample * math.sin(yaw_curr)
-        #         global_z = z_curr + xs_sample * math.sin(yaw_curr) + zs_sample * math.cos(yaw_curr)
-        #         poly_line.set_data(global_x, global_z)
-        #     except Exception as e:
-        #         poly_line.set_data([], [])
-        # else:
-        #     poly_line.set_data([], [])
-        # 
+        # --- Update Track Width Plot (Bottom Subplot) ---
+        # Determine the projection of the car onto the centerline.
+        dists_to_car = np.hypot(pts_array[:, 0] - x_curr, pts_array[:, 1] - z_curr)
+        i_proj = int(np.argmin(dists_to_car))
+        L_proj = cum_dist[i_proj]
+        
+        local_offsets = []
+        local_widths = []
+        # Loop over every centerline point (precomputed in track_widths_all).
+        # (The ordering in track_widths_all matches that of centerline_x/centerline_z.)
+        for i, tw in enumerate(track_widths_all):
+            # Compute the local arc-length offset relative to the car's projection.
+            offset = cum_dist[i] - L_proj
+            # Only consider points between -5 m and +20 m.
+            if -5 <= offset <= 20:
+                local_offsets.append(offset)
+                local_widths.append(tw["width"])
+        
+        track_width_line.set_data(local_offsets, local_widths)
         
         return (car_point, heading_line, front_scatter, behind_scatter,
-                *yellow_ray_lines, *blue_ray_lines, poly_line)
+                *yellow_ray_lines, *blue_ray_lines, track_width_line)
 
     anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
     plt.tight_layout()
@@ -474,11 +578,13 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     return anim
 
 # --------------------- Main Script ---------------------
-
 if __name__ == "__main__":
     data = read_csv_data("session3/run1.csv")
     data = shift_car_position(data)
     blue_cones, yellow_cones, clx, clz = parse_cone_data("../../sim/tracks/default.json")
     # Resample the centerline so that points are every 1 meter.
     resampled_clx, resampled_clz = resample_centerline(clx, clz, resolution=1.0)
+    ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx, clz)
+    track_widths = compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, ordered_yellow)
+# track_widths is a list of dicts with keys: "center", "width", "yellow_pt", "blue_pt"
     animate_run(blue_cones, yellow_cones, resampled_clx, resampled_clz, data)
