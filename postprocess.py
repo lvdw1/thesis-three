@@ -567,6 +567,57 @@ def fit_cubic_polynomial(front_points, domain=(-5, 20), num_samples=100):
     z_sample = poly(x_sample)
     return np.vstack((x_sample, z_sample)).T
 
+# --------------------- Distance to centerline ----------------
+def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline_z):
+    """
+    Computes the signed perpendicular distance from the car's position (car_x, car_z)
+    to the centerline (treated as a polyline). The sign is determined using the leftward
+    normal of each segment (defined as (-tangent_y, tangent_x)). The function returns the
+    distance (with sign) corresponding to the segment which gives the smallest absolute distance.
+    
+    Parameters:
+      - car_x, car_z: The car's global (x, z) position.
+      - centerline_x, centerline_z: Lists (or arrays) of the centerline's x and z coordinates.
+    
+    Returns:
+      - The signed distance from the car to the centerline.
+    """
+    pts = list(zip(centerline_x, centerline_z))
+    best_distance = float('inf')
+    best_signed_distance = 0.0
+    for i in range(len(pts) - 1):
+        a = pts[i]
+        b = pts[i + 1]
+        # Vector along the segment.
+        vx = b[0] - a[0]
+        vz = b[1] - a[1]
+        v_dot_v = vx * vx + vz * vz
+        if v_dot_v == 0:
+            proj = a
+        else:
+            t = ((car_x - a[0]) * vx + (car_z - a[1]) * vz) / v_dot_v
+            if t < 0:
+                proj = a
+            elif t > 1:
+                proj = b
+            else:
+                proj = (a[0] + t * vx, a[1] + t * vz)
+        dist = math.hypot(car_x - proj[0], car_z - proj[1])
+        if dist < best_distance:
+            best_distance = dist
+            # Compute unit tangent for the segment.
+            if v_dot_v == 0:
+                tangent = (1.0, 0.0)
+            else:
+                norm_v = math.sqrt(v_dot_v)
+                tangent = (vx / norm_v, vz / norm_v)
+            # Define the leftward normal (consistent with the heading difference convention).
+            left_normal = (-tangent[1], tangent[0])
+            diff_vec = (car_x - proj[0], car_z - proj[1])
+            # The dot product gives the signed magnitude.
+            sign = 1 if (diff_vec[0]*left_normal[0] + diff_vec[1]*left_normal[1]) >= 0 else -1
+            best_signed_distance = sign * dist
+    return best_signed_distance
 # --------------------- Animation Function ---------------------
 def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
                 heading_length=3.0,
@@ -581,8 +632,9 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
       - A bottom subplot showing both the track width (distance between yellow and blue edges)
         and the centerline curvature (1/R, with sign) for each resampled centerline point
         that lies within 5 m behind to 20 m ahead of the car's projection onto the centerline.
-      - A lower-right corner bar plot showing the instantaneous difference between the
-        car's heading and the local track heading.
+      - Two bar plots in the lower-right corner: one showing the instantaneous heading difference
+        (car's heading minus track heading) and one showing the signed distance from the car to
+        the centerline.
     """
     # Extract car data.
     t = car_data["time"]
@@ -595,16 +647,23 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     fig, (ax_track, ax_width) = plt.subplots(2, 1, figsize=(10, 10),
                                              gridspec_kw={'height_ratios': [3, 1]})
     
-    # Adjust the main subplots to leave space on the right for the heading difference plot.
+    # Adjust main subplots to leave space on the right for the bar plots.
     fig.subplots_adjust(right=0.7)
     
     # Add a new axes in the lower right for heading difference.
-    ax_heading = fig.add_axes([0.75, 0.1, 0.2, 0.19])  # [left, bottom, width, height] in figure coordinates.
+    ax_heading = fig.add_axes([0.75, 0.1, 0.1, 0.19])  # [left, bottom, width, height]
     ax_heading.set_title("Heading Diff (rad)")
     ax_heading.set_ylim(-1, 1)
     ax_heading.set_xticks([])
-    # Create an initial bar with zero height.
     heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
+    
+    # Add a new axes above the heading diff for the signed distance.
+    ax_distance = fig.add_axes([0.88, 0.10, 0.1, 0.19])
+    ax_distance.set_title("Distance to Centerline (m)")
+    # Set y-axis limits as appropriate (e.g., -5 to 5 meters).
+    ax_distance.set_ylim(-2, 2)
+    ax_distance.set_xticks([])
+    distance_bar = ax_distance.bar(0, 0, width=0.5, color='blue')
     
     # --- Setup track (top) axes ---
     ax_track.set_aspect('equal', adjustable='box')
@@ -686,7 +745,7 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         heading_line.set_data([x_curr, x_heading], [z_curr, z_heading])
         
         # Visualize local centerline points on the track.
-        resampled_pts = centerline_pts  # Already resampled.
+        resampled_pts = centerline_pts
         front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
             x_curr, z_curr, yaw_curr, resampled_pts,
             front_distance=5.0, behind_distance=20.0)
@@ -741,12 +800,26 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
             bar_rect.set_y(heading_diff)
             bar_rect.set_height(-heading_diff)
         
+        # --- Compute and Update Signed Distance Bar ---
+        signed_distance = compute_signed_distance_to_centerline(x_curr, z_curr, centerline_x, centerline_z)
+        dist_rect = distance_bar[0]
+        # For the bar, set its y-position and height so that a positive signed_distance
+        # makes the bar extend upward and a negative signed_distance extends downward.
+        if signed_distance >= 0:
+            dist_rect.set_y(0)
+            dist_rect.set_height(signed_distance)
+        else:
+            dist_rect.set_y(signed_distance)
+            dist_rect.set_height(-signed_distance)
+        
         return (car_point, heading_line, front_scatter, behind_scatter,
-                *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line, bar_rect)
+                *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line, 
+                bar_rect, dist_rect)
 
     anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
     plt.show()
-    return anim
+    return None
+
 # --------------------- Main Script ---------------------
 if __name__ == "__main__":
     data = read_csv_data("session3/run1.csv")
