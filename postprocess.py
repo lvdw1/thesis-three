@@ -256,63 +256,6 @@ def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_po
     
     return front_local, behind_local, global_front, global_behind
 # --------------------- Centerpoints Classification with Curvature ---------------------
-# (The old function find_centerpoints_in_front_and_behind is no longer used.)
-
-def fit_circle_to_points(points):
-    """
-    Fits a circle to a set of 2D points using a least-squares approach.
-    """
-    points = np.array(points)
-    x = points[:, 0]
-    y = points[:, 1]
-    A = np.column_stack([x, y, np.ones(len(x))])
-    B = -(x**2 + y**2)
-    sol, residuals, rank, s = np.linalg.lstsq(A, B, rcond=None)
-    D, E, F = sol
-    a = -D / 2
-    b = -E / 2
-    r = np.sqrt(max(0, a**2 + b**2 - F))
-    return a, b, r
-
-def compute_curvatures(centerpoints, window_size=2):
-    """
-    Computes curvature at each centerline point by fitting a circle to a local window.
-    """
-    pts = np.array(centerpoints)
-    n = len(pts)
-    curvatures = []
-    for i in range(n):
-        i_start = max(0, i - window_size)
-        i_end = min(n, i + window_size + 1)
-        window = pts[i_start:i_end]
-        if len(window) < 3:
-            curvatures.append(0.0)
-            continue
-        try:
-            a, b, r = fit_circle_to_points(window)
-            if r == 0:
-                curvatures.append(0.0)
-                continue
-            if i == 0:
-                tangent = pts[1] - pts[0]
-            elif i == n - 1:
-                tangent = pts[-1] - pts[-2]
-            else:
-                tangent = pts[i + 1] - pts[i - 1]
-            t_norm = np.linalg.norm(tangent)
-            if t_norm == 0:
-                curvatures.append(0.0)
-                continue
-            tangent = tangent / t_norm
-            cp = pts[i] - np.array([a, b])
-            cross_val = tangent[0] * cp[1] - tangent[1] * cp[0]
-            sign = np.sign(cross_val)
-            curvature = sign / r
-            curvatures.append(curvature)
-        except Exception as e:
-            logging.warning(f"Error fitting circle for centerpoint index {i}: {e}")
-            curvatures.append(0.0)
-    return curvatures
 
 # --------------------- Raycasting Functions ---------------------
 
@@ -521,24 +464,14 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         # else:
         #     poly_line.set_data([], [])
         # 
-        # --------- Update Curvature Plot (bottom) ----------
-        if front_local:
-            front_local_arr = np.array(front_local)
-            front_curv_line.set_data(front_local_arr[:, 0], front_local_arr[:, 2])
-        else:
-            front_curv_line.set_data([], [])
-        if behind_local:
-            behind_local_arr = np.array(behind_local)
-            behind_curv_line.set_data(behind_local_arr[:, 0], behind_local_arr[:, 2])
-        else:
-            behind_curv_line.set_data([], [])
         
         return (car_point, heading_line, front_scatter, behind_scatter,
-                *yellow_ray_lines, *blue_ray_lines, poly_line, front_curv_line, behind_curv_line)
+                *yellow_ray_lines, *blue_ray_lines, poly_line)
 
     anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
     plt.tight_layout()
     plt.show()
+    return anim
 
 # --------------------- Main Script ---------------------
 
