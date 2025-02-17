@@ -255,6 +255,7 @@ def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_po
         behind_local.insert(0, (-behind_distance, lateral, 0))
     
     return front_local, behind_local, global_front, global_behind
+
 # --------------------- Centerpoints Classification with Curvature ---------------------
 def compute_local_curvature(centerline_x, centerline_z, window_size=5):
     """
@@ -822,12 +823,135 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
 
 # --------------------- Main Script ---------------------
 if __name__ == "__main__":
+    # Read and adjust the CSV data.
     data = read_csv_data("session3/run1.csv")
+    if data is None:
+        exit(1)
     data = shift_car_position(data)
+
+    # Parse cones and centerline from the JSON track file.
     blue_cones, yellow_cones, clx, clz = parse_cone_data("../../sim/tracks/default.json")
-    # Resample the centerline so that points are every 1 meter.
+    
+    # Resample the centerline at 1 m intervals.
     resampled_clx, resampled_clz = resample_centerline(clx, clz, resolution=1.0)
+    centerline_pts = list(zip(resampled_clx, resampled_clz))
+    
+    # Get the ordered track edges (used for raycasting and track width computations).
     ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx, clz)
-    track_widths = compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, ordered_yellow)
-# track_widths is a list of dicts with keys: "center", "width", "yellow_pt", "blue_pt"
-    animate_run(blue_cones, yellow_cones, resampled_clx, resampled_clz, data)
+    
+    # Precompute curvature and track width for the resampled centerline.
+    curvatures_all = compute_local_curvature(resampled_clx, resampled_clz, window_size=5)
+    track_widths_all = compute_local_track_widths(resampled_clx, resampled_clz,
+                                                  ordered_blue, ordered_yellow,
+                                                  max_width=10.0)
+    
+    # Prepare the output CSV with the required headers.
+    output_filename = "output.csv"
+    with open(output_filename, "w", newline="") as csvfile:
+        fieldnames = []
+        # Front 20 points ahead of the car.
+        for i in range(1, 21):
+            # fieldnames.extend([f"rel_x{i}", f"rel_z{i}", f"c{i}", f"tw{i}"])
+            fieldnames.extend([f"rel_z{i}", f"c{i}", f"tw{i}"]) #removed rel_x coz just 1, 2, 3, etc constantly
+        # 5 points behind the car.
+        for i in range(1, 6):
+            # fieldnames.extend([f"b_rel_x{i}", f"b_rel_z{i}", f"b_c{i}", f"b_tw{i}"])
+            fieldnames.extend([f"b_rel_z{i}", f"b_c{i}", f"b_tw{i}"]) #again, removed b_rel_x
+        # 14 yellow ray distances.
+        for i in range(1, 15):
+            fieldnames.append(f"yr{i}")
+        # 14 blue ray distances.
+        for i in range(1, 15):
+            fieldnames.append(f"br{i}")
+        # Distance to centerline, heading difference, and vehicle dynamics.
+        fieldnames.extend(["dc", "dh", "vx", "vy", "psi_dot", "ax", "ay"])
+        
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        
+        num_frames = len(data["time"])
+        for frame in range(num_frames):
+            car_x = data["x_pos"][frame]
+            car_z = data["z_pos"][frame]
+            # Convert yaw from degrees to radians.
+            yaw_curr = math.radians(data["yaw_angle"][frame])
+            
+            # Use the provided function to get local centerline points both ahead and behind.
+            front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
+                car_x, car_z, yaw_curr, centerline_pts,
+                front_distance=20.0, behind_distance=5.0)
+            
+            # Interpolate front local points so we have one sample per meter (1 to 20).
+            if front_local:
+                fl = np.array(front_local)  # Each row: (arc_offset, lateral, dummy)
+                x_front = fl[:, 0]
+                z_front = fl[:, 1]
+                target_x = np.arange(1, 21)
+                target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
+            else:
+                target_x = np.arange(1, 21)
+                target_z = np.full(20, float("nan"))
+            
+            # Interpolate behind local points so we have one sample per meter for -5 to -1.
+            if behind_local:
+                bl = np.array(behind_local)  # Each row: (arc_offset, lateral, dummy)
+                x_behind = bl[:, 0]
+                z_behind = bl[:, 1]
+                # Target behind offsets: -5, -4, -3, -2, -1 (in increasing order).
+                target_x_b = np.arange(-5, 0, 1)
+                target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
+            else:
+                target_x_b = np.arange(-5, 0, 1)
+                target_z_b = np.full(5, float("nan"))
+            
+            # Determine the projection index on the resampled centerline.
+            dists = [math.hypot(pt[0] - car_x, pt[1] - car_z) for pt in centerline_pts]
+            i_proj = int(np.argmin(dists))
+            
+            row = {}
+            # Fill in front (ahead) points.
+            for i, d in enumerate(target_x, start=1):
+                row[f"rel_z{i}"] = target_z[i - 1]
+                idx = i_proj + int(round(d))
+                if idx < len(resampled_clx):
+                    row[f"c{i}"] = curvatures_all[idx]
+                    row[f"tw{i}"] = track_widths_all[idx]["width"]
+                else:
+                    row[f"c{i}"] = float("nan")
+                    row[f"tw{i}"] = float("nan")
+            
+            # Fill in behind points.
+            for i, d in enumerate(target_x_b, start=1):
+                row[f"b_rel_z{i}"] = target_z_b[i - 1]
+                idx_b = i_proj + int(round(d))
+                if 0 <= idx_b < len(resampled_clx):
+                    row[f"b_c{i}"] = curvatures_all[idx_b]
+                    row[f"b_tw{i}"] = track_widths_all[idx_b]["width"]
+                else:
+                    row[f"b_c{i}"] = float("nan")
+                    row[f"b_tw{i}"] = float("nan")
+            
+            # Compute raycasting distances for yellow and blue edges.
+            yellow_ray_dists, blue_ray_dists = raycast_for_state(
+                car_x, car_z, yaw_curr, ordered_yellow, ordered_blue, max_distance=20.0)
+            for i, d in enumerate(yellow_ray_dists, start=1):
+                row[f"yr{i}"] = d
+            for i, d in enumerate(blue_ray_dists, start=1):
+                row[f"br{i}"] = d
+            
+            # Compute the signed distance to the centerline and heading difference.
+            dc = compute_signed_distance_to_centerline(car_x, car_z, resampled_clx, resampled_clz)
+            dh = compute_heading_difference(car_x, car_z, yaw_curr, resampled_clx, resampled_clz)
+            row["dc"] = dc
+            row["dh"] = dh
+            
+            # Append vehicle dynamics from the input CSV.
+            row["vx"] = data["long_vel"][frame]
+            row["vy"] = data["lat_vel"][frame]
+            row["psi_dot"] = data["yaw_rate"][frame]
+            row["ax"] = data["long_acc"][frame]
+            row["ay"] = data["lat_acc"][frame]
+            
+            writer.writerow(row)
+    
+    print(f"Output CSV saved to {output_filename}")
