@@ -473,7 +473,86 @@ def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, order
         })
         
     return results
+# --------------------- Heading differencem ----------------------
+def compute_heading_difference(car_x, car_z, car_heading,
+                              centerline_x, centerline_z):
+    """
+    Computes the difference between the car's heading and the local track heading,
+    both measured relative to the same "reference" where:
+       - heading = 0 means "east"
+       - heading = pi/2 means "north"
+       - heading = -pi/2 means "south"
+       - heading = pi or -pi means "west"
+    
+    The result is guaranteed not to jump abruptly (e.g., from -pi/2 to +pi/2) 
+    because we carefully unwrap both angles and then compute the difference.
 
+    Parameters
+    ----------
+    car_x, car_z : float
+        The car's global (x, z) position.
+    car_heading : float
+        The car's heading (in radians), which may be in any range (e.g., -3pi/2 
+        or +pi/2 for "north"). This will be normalized to [-pi, pi].
+    centerline_x, centerline_z : array-like
+        The track centerline coordinates.
+
+    Returns
+    -------
+    heading_diff : float
+        The difference (in radians) between car heading and track heading at 
+        the closest centerline point, constrained to [-pi/2, pi/2] by "flipping"
+        (not hard-clipping). A positive value means the car is to the "left" 
+        (counter-clockwise) relative to the track direction.
+    """
+    # 1. Compute track headings so that 0 = east, +pi/2 = north.
+    #    => we must use atan2(dz, dx), NOT atan2(-dz, dx).
+    N = len(centerline_x)
+    track_headings = np.zeros(N)
+    for i in range(N):
+        if i == 0:
+            dx = centerline_x[1] - centerline_x[0]
+            dz = centerline_z[1] - centerline_z[0]
+        elif i == N - 1:
+            dx = centerline_x[-1] - centerline_x[-2]
+            dz = centerline_z[-1] - centerline_z[-2]
+        else:
+            dx = centerline_x[i+1] - centerline_x[i-1]
+            dz = centerline_z[i+1] - centerline_z[i-1]
+        # atan2(dz, dx) => 0 = east, +pi/2 = north, etc.
+        track_headings[i] = math.atan2(dz, dx)
+
+    # 2. Unwrap the track headings so that they form a continuous function.
+    track_headings_unwrapped = np.unwrap(track_headings)
+
+    # 3. Find the closest centerline point to the car and get that track heading.
+    dists = [
+        np.hypot(px - car_x, pz - car_z)
+        for px, pz in zip(centerline_x, centerline_z)
+    ]
+    i_min = np.argmin(dists)
+    track_heading_closest = track_headings_unwrapped[i_min]
+
+    # 4. Normalize the car heading into [-pi, pi].
+    #    This ensures that e.g. -3pi/2 also becomes +pi/2, etc.
+    car_heading_normalized = (car_heading + math.pi) % (2*math.pi) - math.pi
+
+    # (Optional) If your car heading is jumping around (like from +3.0 rad 
+    # to -3.0 rad) frame to frame, you may need to do a "running" unwrapping 
+    # across time. But for a single call, normalizing is often enough.
+
+    # 5. Compute raw difference in [-pi, pi] between the two headings.
+    heading_diff = (car_heading_normalized - track_heading_closest + math.pi) % (2*math.pi) - math.pi
+
+    # 6. Because you mentioned the difference should never exceed ±90°,
+    #    we can "flip" angles outside [-pi/2, pi/2] by ±pi. 
+    #    This avoids a hard jump from -pi/2 to +pi/2.
+    if heading_diff > math.pi/2:
+        heading_diff -= math.pi
+    elif heading_diff < -math.pi/2:
+        heading_diff += math.pi
+
+    return heading_diff
 # --------------------- Cubic Polynomial Fit ---------------------
 
 def fit_cubic_polynomial(front_points, domain=(-5, 20), num_samples=100):
@@ -502,6 +581,8 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
       - A bottom subplot showing both the track width (distance between yellow and blue edges)
         and the centerline curvature (1/R, with sign) for each resampled centerline point
         that lies within 5 m behind to 20 m ahead of the car's projection onto the centerline.
+      - A lower-right corner bar plot showing the instantaneous difference between the
+        car's heading and the local track heading.
     """
     # Extract car data.
     t = car_data["time"]
@@ -510,9 +591,20 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     yaw_deg = car_data["yaw_angle"]
     yaw = np.deg2rad(yaw_deg)
 
-    # Create figure with two subplots.
-    fig, (ax_track, ax_width) = plt.subplots(2, 1, figsize=(8, 10),
+    # Create figure with two subplots (top and bottom).
+    fig, (ax_track, ax_width) = plt.subplots(2, 1, figsize=(10, 10),
                                              gridspec_kw={'height_ratios': [3, 1]})
+    
+    # Adjust the main subplots to leave space on the right for the heading difference plot.
+    fig.subplots_adjust(right=0.7)
+    
+    # Add a new axes in the lower right for heading difference.
+    ax_heading = fig.add_axes([0.75, 0.1, 0.2, 0.19])  # [left, bottom, width, height] in figure coordinates.
+    ax_heading.set_title("Heading Diff (rad)")
+    ax_heading.set_ylim(-1, 1)
+    ax_heading.set_xticks([])
+    # Create an initial bar with zero height.
+    heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
     
     # --- Setup track (top) axes ---
     ax_track.set_aspect('equal', adjustable='box')
@@ -556,13 +648,13 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     ax_width.set_xlabel("Local X (m)")
     ax_width.set_ylabel("Track Width (m)")
     ax_width.set_xlim(-5, 20)
-    ax_width.set_ylim(0, 10)  # Adjust as needed for track width values.
+    ax_width.set_ylim(0, 10)
     track_width_line, = ax_width.plot([], [], 'bo-', label='Track Width')
     
     # Create a twin y-axis for curvature.
     ax_curv = ax_width.twinx()
     ax_curv.set_ylabel("Curvature (1/m)")
-    ax_curv.set_ylim(-1, 1)  # Adjust based on expected curvature values.
+    ax_curv.set_ylim(-1, 1)
     curvature_line, = ax_curv.plot([], [], 'r.-', label='Curvature (1/m)')
     
     # Combine legends from both axes on the bottom subplot.
@@ -594,10 +686,10 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         heading_line.set_data([x_curr, x_heading], [z_curr, z_heading])
         
         # Visualize local centerline points on the track.
-        resampled_pts = centerline_pts  # Already resampled at every meter.
+        resampled_pts = centerline_pts  # Already resampled.
         front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
             x_curr, z_curr, yaw_curr, resampled_pts,
-            front_distance=5.0, behind_distance=20.0)  # 20 m ahead and 5 m behind.
+            front_distance=5.0, behind_distance=20.0)
         if global_front:
             front_scatter.set_offsets(np.array(global_front))
         else:
@@ -607,7 +699,7 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         else:
             behind_scatter.set_offsets(np.empty((0,2)))
         
-        # --------- Raycasting for visualization (unchanged) ----------
+        # Raycasting for visualization.
         yellow_ray_dists, blue_ray_dists = raycast_for_state(
             x_curr, z_curr, yaw_curr, ordered_blue, ordered_yellow, max_distance=max_ray_distance)
         for i, d in enumerate(yellow_ray_dists):
@@ -621,8 +713,7 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
             end_z = z_curr + d * math.sin(ray_angle)
             blue_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
         
-        # --- Update Track Width and Curvature Plot (Bottom Subplot) ---
-        # Determine the projection of the car onto the centerline.
+        # Update Track Width and Curvature Plot (Bottom Subplot).
         dists_to_car = np.hypot(pts_array[:, 0] - x_curr, pts_array[:, 1] - z_curr)
         i_proj = int(np.argmin(dists_to_car))
         L_proj = cum_dist[i_proj]
@@ -630,10 +721,8 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         local_offsets = []
         local_widths = []
         local_curvs = []
-        # Loop over every centerline point.
         for i in range(len(centerline_x)):
             offset = cum_dist[i] - L_proj
-            # Only consider points between -5 m and +20 m.
             if -5 <= offset <= 20:
                 local_offsets.append(offset)
                 local_widths.append(track_widths_all[i]["width"])
@@ -642,14 +731,22 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         track_width_line.set_data(local_offsets, local_widths)
         curvature_line.set_data(local_offsets, local_curvs)
         
+        # --- Compute and Update Heading Difference Bar ---
+        heading_diff = compute_heading_difference(x_curr, z_curr, yaw_curr, centerline_x, centerline_z)
+        bar_rect = heading_bar[0]
+        if heading_diff >= 0:
+            bar_rect.set_y(0)
+            bar_rect.set_height(heading_diff)
+        else:
+            bar_rect.set_y(heading_diff)
+            bar_rect.set_height(-heading_diff)
+        
         return (car_point, heading_line, front_scatter, behind_scatter,
-                *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line)
+                *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line, bar_rect)
 
     anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
-    plt.tight_layout()
     plt.show()
     return anim
-
 # --------------------- Main Script ---------------------
 if __name__ == "__main__":
     data = read_csv_data("session3/run1.csv")
