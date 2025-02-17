@@ -933,7 +933,8 @@ if __name__ == "__main__":
             
             # Compute raycasting distances for yellow and blue edges.
             yellow_ray_dists, blue_ray_dists = raycast_for_state(
-                car_x, car_z, yaw_curr, ordered_yellow, ordered_blue, max_distance=20.0)
+                car_x, car_z, yaw_curr, ordered_blue, ordered_yellow, max_distance=20.0)
+
             for i, d in enumerate(yellow_ray_dists, start=1):
                 row[f"yr{i}"] = d
             for i, d in enumerate(blue_ray_dists, start=1):
