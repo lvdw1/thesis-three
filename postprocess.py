@@ -256,6 +256,74 @@ def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_po
     
     return front_local, behind_local, global_front, global_behind
 # --------------------- Centerpoints Classification with Curvature ---------------------
+def compute_local_curvature(centerline_x, centerline_z, window_size=5):
+    """
+    Computes the local curvature at each point along the centerline by fitting a circle
+    to a local window of points. The curvature is defined as the reciprocal of the circle’s
+    radius (1/R). It is a signed value: positive for a left turn and negative for a right turn.
+    
+    Parameters:
+      - centerline_x, centerline_z: lists or arrays of centerline coordinates.
+      - window_size: number of consecutive points to use in the local circle fit (should be odd; default is 5).
+    
+    Returns:
+      - curvatures: a list of curvature values (1/R) for each centerline point.
+    """
+    N = len(centerline_x)
+    curvatures = [0.0] * N
+    
+    # Ensure window_size is odd and at least 3
+    if window_size < 3:
+        window_size = 3
+    if window_size % 2 == 0:
+        window_size += 1
+    half_window = window_size // 2
+
+    for i in range(N):
+        # Determine the local window indices (clamp at boundaries)
+        start = max(0, i - half_window)
+        end = min(N, i + half_window + 1)
+        
+        x_local = np.array(centerline_x[start:end])
+        y_local = np.array(centerline_z[start:end])
+        
+        # Need at least 3 points to fit a circle
+        if len(x_local) < 3:
+            curvatures[i] = 0.0
+            continue
+        
+        # Set up the linear system for the algebraic circle fit:
+        # We model the circle as: x^2 + y^2 + D*x + E*y + F = 0.
+        # For each point, we have: D*x + E*y + F = - (x^2 + y^2).
+        A = np.column_stack((x_local, y_local, np.ones_like(x_local)))
+        b_vec = -(x_local**2 + y_local**2)
+        
+        # Solve the least-squares problem: [D, E, F]
+        sol, _, _, _ = np.linalg.lstsq(A, b_vec, rcond=None)
+        D, E, F = sol
+        
+        # The circle's center is (-D/2, -E/2) and its radius is computed by:
+        center_x = -D / 2.0
+        center_y = -E / 2.0
+        R_sq = center_x**2 + center_y**2 - F
+        if R_sq <= 1e-6:
+            curvatures[i] = 0.0
+        else:
+            R = math.sqrt(R_sq)
+            curvature = 1.0 / R
+            
+            # Determine the sign of the curvature.
+            # Use the vectors from the fitted circle center to the neighboring points.
+            if i > 0 and i < N - 1:
+                vec1 = np.array([centerline_x[i - 1] - center_x, centerline_z[i - 1] - center_y])
+                vec2 = np.array([centerline_x[i + 1] - center_x, centerline_z[i + 1] - center_y])
+                cross_val = vec1[0] * vec2[1] - vec1[1] * vec2[0]
+                # If the cross product is negative, the turn is to the right (negative curvature)
+                if cross_val < 0:
+                    curvature = -curvature
+            curvatures[i] = curvature
+            
+    return curvatures
 
 # --------------------- Raycasting Functions ---------------------
 
@@ -431,11 +499,11 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
       - The track with cones and track edges.
       - A moving car with heading and raycasting.
       - Local centerline points (visualized on the track).
-      - A bottom subplot showing the track width (distance between yellow and blue edges)
-        for each resampled centerline point that lies within 5 m behind to 20 m ahead
-        of the car's current projection on the centerline.
+      - A bottom subplot showing both the track width (distance between yellow and blue edges)
+        and the centerline curvature (1/R, with sign) for each resampled centerline point
+        that lies within 5 m behind to 20 m ahead of the car's projection onto the centerline.
     """
-    # Extract car data
+    # Extract car data.
     t = car_data["time"]
     x_car = car_data["x_pos"]
     z_car = car_data["z_pos"]
@@ -483,32 +551,36 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
     blue_ray_lines = [ax_track.plot([], [], color='cyan', linestyle='--', lw=1)[0]
                       for _ in range(len(blue_angles))]
     
-    # Set track axis limits.
-    all_x = list(x_car) + [pt[0] for pt in blue_cones] + [pt[0] for pt in yellow_cones] + list(centerline_x)
-    all_z = list(z_car) + [pt[1] for pt in blue_cones] + [pt[1] for pt in yellow_cones] + list(centerline_z)
-    if all_x and all_z:
-        margin = 2.0
-        ax_track.set_xlim(min(all_x)-margin, max(all_x)+margin)
-        ax_track.set_ylim(min(all_z)-margin, max(all_z)+margin)
-    ax_track.legend()
-    
-    # --- Setup track width (bottom) axes ---
-    ax_width.set_title("Track Width vs. Local X")
+    # --- Setup bottom axes for Track Width and Curvature ---
+    ax_width.set_title("Track Width and Centerline Curvature vs. Local X")
     ax_width.set_xlabel("Local X (m)")
     ax_width.set_ylabel("Track Width (m)")
     ax_width.set_xlim(-5, 20)
-    ax_width.set_ylim(0, 10)  # y-axis between 0 and 5 meters
+    ax_width.set_ylim(0, 10)  # Adjust as needed for track width values.
     track_width_line, = ax_width.plot([], [], 'bo-', label='Track Width')
-    ax_width.legend()
     
-    # Precompute cumulative distances along the resampled centerline and the track widths for each centerpoint.
+    # Create a twin y-axis for curvature.
+    ax_curv = ax_width.twinx()
+    ax_curv.set_ylabel("Curvature (1/m)")
+    ax_curv.set_ylim(-1, 1)  # Adjust based on expected curvature values.
+    curvature_line, = ax_curv.plot([], [], 'r.-', label='Curvature (1/m)')
+    
+    # Combine legends from both axes on the bottom subplot.
+    lines = [track_width_line, curvature_line]
+    labels = [track_width_line.get_label(), curvature_line.get_label()]
+    ax_width.legend(lines, labels, loc='upper right')
+    
+    # Precompute cumulative distances along the resampled centerline.
     cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
-    # Use max_width=2.5 so that if no intersection is found, each side falls back to 2.5 m.
-    track_widths_all = compute_local_track_widths(centerline_x, centerline_z,
-                                                  ordered_blue, ordered_yellow,
-                                                  max_width=10)
     centerline_pts = list(zip(centerline_x, centerline_z))
     pts_array = np.array(centerline_pts)
+    
+    # Precompute track widths.
+    track_widths_all = compute_local_track_widths(centerline_x, centerline_z,
+                                                  ordered_blue, ordered_yellow,
+                                                  max_width=10.0)
+    # Precompute the local curvature for each centerline point.
+    curvatures_all = compute_local_curvature(centerline_x, centerline_z, window_size=5)
     
     def update(frame_idx):
         x_curr = x_car[frame_idx]
@@ -522,10 +594,10 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         heading_line.set_data([x_curr, x_heading], [z_curr, z_heading])
         
         # Visualize local centerline points on the track.
-        resampled_pts = centerline_pts  # already resampled at every meter
+        resampled_pts = centerline_pts  # Already resampled at every meter.
         front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
             x_curr, z_curr, yaw_curr, resampled_pts,
-            front_distance=5.0, behind_distance=20.0)  # 20 m ahead and 5 m behind (note the parameter order)
+            front_distance=5.0, behind_distance=20.0)  # 20 m ahead and 5 m behind.
         if global_front:
             front_scatter.set_offsets(np.array(global_front))
         else:
@@ -535,7 +607,7 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         else:
             behind_scatter.set_offsets(np.empty((0,2)))
         
-        # --------- Raycasting for visualization ----------
+        # --------- Raycasting for visualization (unchanged) ----------
         yellow_ray_dists, blue_ray_dists = raycast_for_state(
             x_curr, z_curr, yaw_curr, ordered_blue, ordered_yellow, max_distance=max_ray_distance)
         for i, d in enumerate(yellow_ray_dists):
@@ -549,7 +621,7 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
             end_z = z_curr + d * math.sin(ray_angle)
             blue_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
         
-        # --- Update Track Width Plot (Bottom Subplot) ---
+        # --- Update Track Width and Curvature Plot (Bottom Subplot) ---
         # Determine the projection of the car onto the centerline.
         dists_to_car = np.hypot(pts_array[:, 0] - x_curr, pts_array[:, 1] - z_curr)
         i_proj = int(np.argmin(dists_to_car))
@@ -557,20 +629,21 @@ def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
         
         local_offsets = []
         local_widths = []
-        # Loop over every centerline point (precomputed in track_widths_all).
-        # (The ordering in track_widths_all matches that of centerline_x/centerline_z.)
-        for i, tw in enumerate(track_widths_all):
-            # Compute the local arc-length offset relative to the car's projection.
+        local_curvs = []
+        # Loop over every centerline point.
+        for i in range(len(centerline_x)):
             offset = cum_dist[i] - L_proj
             # Only consider points between -5 m and +20 m.
             if -5 <= offset <= 20:
                 local_offsets.append(offset)
-                local_widths.append(tw["width"])
+                local_widths.append(track_widths_all[i]["width"])
+                local_curvs.append(curvatures_all[i])
         
         track_width_line.set_data(local_offsets, local_widths)
+        curvature_line.set_data(local_offsets, local_curvs)
         
         return (car_point, heading_line, front_scatter, behind_scatter,
-                *yellow_ray_lines, *blue_ray_lines, track_width_line)
+                *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line)
 
     anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
     plt.tight_layout()
