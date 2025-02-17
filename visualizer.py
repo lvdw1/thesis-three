@@ -1,188 +1,183 @@
 import csv
+import json
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
-import math
+import numpy as np
+import math 
+import matplotlib.animation as animation
 
-def read_csv_data(file_path):
-    """
-    Reads CSV data and extracts car location, heading, recognized cone locations, and control inputs.
+def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_distance=20.0):
+# Load CSV data.
+# Load CSV data.
+    with open(output_csv_filename, "r") as f:
+        reader = csv.DictReader(f)
+        frames = [row for row in reader]
 
-    Args:
-        file_path (str): Path to the CSV file.
-
-    Returns:
-        list of dict: List of rows containing car, heading, cone data, and control inputs.
-    """
-    data = []
-    with open(file_path, 'r') as csvfile:
-        reader = csv.DictReader(csvfile)
-        for row in reader:
+    # Convert all numeric fields to floats.
+    for frame in frames:
+        for key in frame:
             try:
-                car_x = float(row["X Position"])
-                car_z = float(row["Z Position"])
-                yaw = float(row["Yaw"])  # Car's heading (yaw)
-                next_blue_cones = eval(row["Next Blue Cones"])  # Parse stringified list
-                next_yellow_cones = eval(row["Next Yellow Cones"])  # Parse stringified list
-                steering_angle = float(row["Steering Angle"])
-                throttle = float(row["Throttle"])
-                brake = float(row["Brake"])
+                frame[key] = float(frame[key])
+            except ValueError:
+                pass
 
-                data.append({
-                    "car_position": (car_x, car_z),
-                    "yaw": yaw,
-                    "blue_cones": next_blue_cones,
-                    "yellow_cones": next_yellow_cones,
-                    "steering_angle": steering_angle,
-                    "throttle": throttle,
-                    "brake": brake,
-                })
-            except Exception as e:
-                print(f"Error parsing row: {row}. Error: {e}")
-    return data
+    # Set up the figure with two subplots.
+    fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(10, 10),
+                                             gridspec_kw={'height_ratios': [3, 1]})
+    fig.subplots_adjust(right=0.7)
 
-def rotate_point(x, z, angle):
-    """
-    Rotates a point around the origin by a given angle.
+    # Set the main plot axes limits as specified.
+    ax_top.set_xlim(-10, 30)
+    ax_top.set_ylim(-5, 5)
+    ax_top.set_aspect('equal', adjustable='box')
+    ax_top.set_title("Local Frame (Car Fixed at (0,0), Heading = 0°)")
+    ax_top.set_xlabel("Local X (m)")
+    ax_top.set_ylabel("Local Z (m)")
 
-    Args:
-        x (float): X-coordinate of the point.
-        z (float): Z-coordinate of the point.
-        angle (float): Rotation angle in degrees.
+    # Extra axes for heading difference and distance-to-centerline bars.
+    ax_heading = fig.add_axes([0.75, 0.1, 0.1, 0.19])
+    ax_heading.set_title("Heading Diff (rad)")
+    ax_heading.set_ylim(-1, 1)
+    ax_heading.set_xticks([])
+    heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
 
-    Returns:
-        tuple: Rotated (x, z) coordinates.
-    """
-    rad = math.radians(angle)
-    cos_angle = math.cos(rad)
-    sin_angle = math.sin(rad)
-    x_rot = cos_angle * x + sin_angle * z
-    z_rot = -sin_angle * x + cos_angle * z
-    return x_rot, z_rot
+    ax_distance = fig.add_axes([0.88, 0.1, 0.1, 0.19])
+    ax_distance.set_title("Distance to Centerline (m)")
+    ax_distance.set_ylim(-2, 2)
+    ax_distance.set_xticks([])
+    distance_bar = ax_distance.bar(0, 0, width=0.5, color='blue')
 
-def transform_cones(cones, car_position, yaw):
-    """
-    Transforms cone coordinates to be relative to the car's position and heading.
+    # Create animated objects for the local view.
+    car_point, = ax_top.plot([], [], 'ko', ms=8, label='Car')
+    heading_line, = ax_top.plot([], [], 'r-', lw=2, label='Heading')
+    # Scatter plots for centerline points.
+    front_scatter = ax_top.scatter([], [], c='magenta', s=25, label='Front Centerline')
+    behind_scatter = ax_top.scatter([], [], c='green', s=25, label='Behind Centerline')
+    # Line connecting all centerline points (x = 1,2,...; z from CSV).
+    centerline_line, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
 
-    Args:
-        cones (list of tuple): Original cone positions.
-        car_position (tuple): Car's current position (x, z).
-        yaw (float): Car's heading in degrees.
+    # Define fixed ray angles.
+    yellow_angles_deg = np.arange(-20, 111, 10)
+    blue_angles_deg = np.arange(20, -111, -10)
+    yellow_angles = np.deg2rad(yellow_angles_deg)
+    blue_angles = np.deg2rad(blue_angles_deg)
+    yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0]
+                        for _ in range(len(yellow_angles))]
+    blue_ray_lines = [ax_top.plot([], [], color='cyan', linestyle='--', lw=1)[0]
+                      for _ in range(len(blue_angles))]
 
-    Returns:
-        list of tuple: Transformed cone positions relative to the car.
-    """
-    transformed = []
-    car_x, car_z = car_position
-    for cone_x, cone_z in cones:
-        # Translate cones relative to car's position
-        dx = cone_x - car_x
-        dz = cone_z - car_z
+    # Bottom subplot: track width and curvature.
+    ax_bottom.set_title("Track Width and Centerline Curvature")
+    ax_bottom.set_xlabel("Local X (m)")
+    ax_bottom.set_ylabel("Track Width (m)")
+    ax_bottom.set_xlim(-5, 20)
+    ax_bottom.set_ylim(0, 10)
 
-        # Rotate cones relative to car's heading
-        x_rel, z_rel = rotate_point(dx, dz, -yaw)
-        transformed.append((x_rel, z_rel))
-    return transformed
+    track_width_line, = ax_bottom.plot([], [], 'bo-', label='Forward Track Width')
+    track_width_line_back, = ax_bottom.plot([], [], 'go-', label='Backward Track Width')
+    ax_bottom.legend(loc='upper left')
 
-def visualize_data(data):
-    """
-    Visualizes car location, heading, recognized cones, and control inputs using animated plots.
-    """
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [2, 1]})
+    ax_curv = ax_bottom.twinx()
+    curvature_line, = ax_curv.plot([], [], 'r.-', label='Forward Curvature (1/m)')
+    curvature_line_back, = ax_curv.plot([], [], 'm.-', label='Backward Curvature (1/m)')
+    ax_curv.set_ylim(-0.5, 0.5)
+    ax_curv.legend(loc='upper right')
 
-    # Plot 1: Car and cone visualization
-    car_point, = ax1.plot(0, 0, 'ro', label="Car (stationary)", markersize=8)  # Car stays at (0, 0)
-    blue_cones_plot, = ax1.plot([], [], 'bo', label="Blue Cones")
-    yellow_cones_plot, = ax1.plot([], [], 'yo', label="Yellow Cones")
-    car_heading, = ax1.plot([], [], 'g-', label="Car Heading")
+    def update(frame_idx):
+        frame = frames[frame_idx]
 
-    ax1.set_xlim(-20, 20)
-    ax1.set_ylim(-20, 20)
-    ax1.set_xlabel("Relative X Position")
-    ax1.set_ylabel("Relative Z Position")
-    ax1.set_title("Cone Positions Relative to Car")
-    ax1.legend()
+        # Car remains fixed at (0,0) with heading 0.
+        car_point.set_data([0], [0])
+        heading_line.set_data([0, heading_length], [0, 0])
 
-    # Plot 2: Control inputs (steering, throttle, brake)
-    ax2.set_xlim(0, len(data))  # Frame count on the x-axis
-    ax2.set_ylim(-1.1, 1.1)  # Normalized range for control inputs
-    ax2.set_xlabel("Frame")
-    ax2.set_ylabel("Control Values")
-    ax2.set_title("Control Inputs Over Time")
-    ax2.grid(True)
-    line_steering, = ax2.plot([], [], label="Steering Angle", color="blue")
-    line_throttle, = ax2.plot([], [], label="Throttle", color="green")
-    line_brake, = ax2.plot([], [], label="Brake", color="red")
-    ax2.legend()
+        # Extract and plot front centerline points.
+        front_points = []
+        for i in range(1, 21):
+            # The x-coordinate is simply i.
+            x_val = float(i)
+            # Get the z-coordinate from the CSV (use NaN if missing).
+            key_z = f"rel_z{i}"
+            z_val = frame.get(key_z, float("nan"))
+            front_points.append([x_val, z_val])
+        front_scatter.set_offsets(np.array(front_points))
 
-    # Initialize data storage for Plot 2
-    frames = []
-    steering_values = []
-    throttle_values = []
-    brake_values = []
+# Extract and plot behind centerline points.
+        behind_points = []
+# Here we use x-coordinates from -5 to -1.
+        for i, x_val in enumerate(range(-5, 0), start=1):
+            key_z = f"b_rel_z{i}"
+            z_val = frame.get(key_z, float("nan"))
+            behind_points.append([float(x_val), z_val])
+        behind_scatter.set_offsets(np.array(behind_points))
 
-    def update(frame):
-        # Update Plot 1: Cones relative to stationary car
-        if frame >= len(data):
-            return blue_cones_plot, yellow_cones_plot, car_heading, line_steering, line_throttle, line_brake
+        # Update the centerline line connecting all front centerline points.
+        # Use sequential x-coordinates 1,2,...,20 and the corresponding z from CSV.
+        centerline_x = np.arange(1, 21)
+        centerline_z = [frame.get(f"rel_z{i}", float('nan')) for i in range(1, 21)]
+        centerline_line.set_data(centerline_x, centerline_z)
 
-        car_position = data[frame]["car_position"]
-        yaw = data[frame]["yaw"]
-        blue_cones = data[frame]["blue_cones"]
-        yellow_cones = data[frame]["yellow_cones"]
-        steering_angle = data[frame]["steering_angle"]
-        throttle = data[frame]["throttle"]
-        brake = data[frame]["brake"]
+        # Update yellow ray lines.
+        for i, angle in enumerate(yellow_angles):
+            key = f"yr{i+1}"
+            distance = frame.get(key)
+            end_x = distance * math.cos(angle)
+            end_z = distance * math.sin(angle)
+            yellow_ray_lines[i].set_data([0, end_x], [0, end_z])
+        # Update blue ray lines.
+        for i, angle in enumerate(blue_angles):
+            key = f"br{i+1}"
+            distance = frame.get(key)
+            end_x = distance * math.cos(angle)
+            end_z = distance * math.sin(angle)
+            blue_ray_lines[i].set_data([0, end_x], [0, end_z])
 
-        # Transform cones to be relative to the car
-        rel_blue_cones = transform_cones(blue_cones, car_position, yaw) if blue_cones else []
-        rel_yellow_cones = transform_cones(yellow_cones, car_position, yaw) if yellow_cones else []
+        # Bottom subplot: plot track width and curvature using front centerline data.
+        # Forward track width and curvature (for points 1 to 20).
+        tws, curvs = [], []
+        for i in range(1, 21):
+            key_tw = f"tw{i}"
+            key_c = f"c{i}"
+            tws.append(frame.get(key_tw, float("nan")))
+            curvs.append(frame.get(key_c, float("nan")))
+        local_xs = list(range(1, 21))
+        track_width_line.set_data(local_xs, tws)
+        curvature_line.set_data(local_xs, curvs)
 
-        # Update blue cones
-        if rel_blue_cones:
-            blue_x, blue_y = zip(*rel_blue_cones)
-            blue_cones_plot.set_data(blue_x, blue_y)
+        # Backward track width and curvature (for points -5 to -1).
+        btws, bcurvs = [], []
+        for i in range(1, 6):
+            key_tw = f"b_tw{i}"
+            key_c = f"b_c{i}"
+            btws.append(frame.get(key_tw, float("nan")))
+            bcurvs.append(frame.get(key_c, float("nan")))
+        local_xs_b = list(range(-5, 0))
+        track_width_line_back.set_data(local_xs_b, btws)
+        curvature_line_back.set_data(local_xs_b, bcurvs)
+
+        # Update the heading difference bar.
+        dh = frame.get("dh", 0)
+        if dh >= 0:
+            heading_bar[0].set_y(0)
+            heading_bar[0].set_height(dh)
         else:
-            blue_cones_plot.set_data([], [])
+            heading_bar[0].set_y(dh)
+            heading_bar[0].set_height(-dh)
 
-        # Update yellow cones
-        if rel_yellow_cones:
-            yellow_x, yellow_y = zip(*rel_yellow_cones)
-            yellow_cones_plot.set_data(yellow_x, yellow_y)
+        # Update the distance-to-centerline bar.
+        dc = frame.get("dc", 0)
+        if dc >= 0:
+            distance_bar[0].set_y(0)
+            distance_bar[0].set_height(dc)
         else:
-            yellow_cones_plot.set_data([], [])
+            distance_bar[0].set_y(dc)
+            distance_bar[0].set_height(-dc)
 
-        # Heading arrow (stationary car at origin)
-        heading_length = 5  # Length of the arrow
+        return (car_point, heading_line, front_scatter, behind_scatter, centerline_line,
+                *yellow_ray_lines, *blue_ray_lines, track_width_line, track_width_line_back, curvature_line, curvature_line_back,
+                heading_bar[0], distance_bar[0])
 
-        # Use -yaw for the arrow to match cone rotation logic
-        heading_x = heading_length * math.cos(math.radians(yaw*2))
-        heading_y = heading_length * math.sin(math.radians(yaw*2))
-
-        # Update the car's heading line to point in the correct direction
-        car_heading.set_data([0, heading_x], [0, heading_y])
-
-        # Update Plot 2: Control inputs
-        frames.append(frame)
-        steering_values.append(steering_angle)
-        throttle_values.append(throttle)
-        brake_values.append(brake)
-
-        line_steering.set_data(frames, steering_values)
-        line_throttle.set_data(frames, throttle_values)
-        line_brake.set_data(frames, brake_values)
-
-        return blue_cones_plot, yellow_cones_plot, car_heading, line_steering, line_throttle, line_brake
-
-    ani = FuncAnimation(fig, update, frames=len(data), interval=20, blit=False)
-    plt.tight_layout()
+    anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=20, blit=True)
     plt.show()
 
+
 if __name__ == "__main__":
-    # Replace with your CSV file path
-    csv_file_path = "car_data_run_nn_v001.csv"
-
-    # Read data
-    car_and_cone_data = read_csv_data(csv_file_path)
-
-    # Visualize data
-    visualize_data(car_and_cone_data)
+    animate_run_from_csv_local("output.csv")
