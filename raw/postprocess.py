@@ -111,6 +111,7 @@ def read_csv_data(file_path):
         reader = csv.DictReader(f)
         times, x_pos, z_pos, yaw_angle = [], [], [], []
         long_vel, lat_vel, yaw_rate  = [], [], []
+        steering, throttle, brake = [], [], []
 
         for row in reader:
             try:
@@ -121,6 +122,9 @@ def read_csv_data(file_path):
                 long_vel.append(float(row["long_vel"]))
                 lat_vel.append(float(row["lat_vel"]))
                 yaw_rate.append(float(row["yaw_rate"]))
+                steering.append(float(row["steering"]))
+                throttle.append(float(row["throttle"]))
+                brake.append(float(row["brake"]))
             except Exception as e:
                 logging.warning(f"Error parsing row: {row} - {e}")
 
@@ -136,6 +140,9 @@ def read_csv_data(file_path):
             "long_vel": np.array(long_vel),
             "lat_vel": np.array(lat_vel),
             "yaw_rate": np.array(yaw_rate),
+            "steering": np.array(steering),
+            "throttle": np.array(throttle),
+            "brake": np.array(brake),
         }
 
 # --------------------- Resampling and Local Extraction ---------------------
@@ -883,7 +890,7 @@ if __name__ == "__main__":
         for i in range(1, 15):
             fieldnames.append(f"br{i}")
         # Distance to centerline, heading difference, and vehicle dynamics.
-        fieldnames.extend(["dc", "dh", "vx", "vy", "psi_dot", "ax", "ay"])
+        fieldnames.extend(["dc", "dh", "vx", "vy", "psi_dot", "ax", "ay", "steering", "throttle", "brake"])
         
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -982,6 +989,15 @@ if __name__ == "__main__":
             ax, ay = compute_accelerations(time,vx,vy)
             row["ax"] = ax[frame]
             row["ay"] = ay[frame]
+
+            # Append driver inputs from the input CSV
+            steering = data["steering"]
+            throttle = data["throttle"]
+            brake = data["brake"]
+
+            row["steering"] = steering[frame]
+            row["throttle"] = throttle[frame]
+            row["brake"] = brake[frame]
             
             writer.writerow(row)
     
