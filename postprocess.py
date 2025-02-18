@@ -822,7 +822,7 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
 #     plt.show()
 #     return None
 
-# --------------------- Main Script ---------------------
+# ----------- --------------------- Main Script ---------------------
 if __name__ == "__main__":
     # Read and adjust the CSV data.
     data = read_csv_data("session3/run1.csv")
@@ -852,12 +852,13 @@ if __name__ == "__main__":
         fieldnames = []
         # Front 20 points ahead of the car.
         for i in range(1, 21):
-            # fieldnames.extend([f"rel_x{i}", f"rel_z{i}", f"c{i}", f"tw{i}"])
-            fieldnames.extend([f"rel_z{i}", f"c{i}", f"tw{i}"]) #removed rel_x coz just 1, 2, 3, etc constantly
+            # Removed rel_x columns since they're just 1, 2, 3, etc.
+            fieldnames.extend([f"rel_z{i}", f"c{i}", f"tw{i}"])
         # 5 points behind the car.
         for i in range(1, 6):
-            # fieldnames.extend([f"b_rel_x{i}", f"b_rel_z{i}", f"b_c{i}", f"b_tw{i}"])
-            fieldnames.extend([f"b_rel_z{i}", f"b_c{i}", f"b_tw{i}"]) #again, removed b_rel_x
+            fieldnames.extend([f"b_rel_z{i}", f"b_c{i}", f"b_tw{i}"])
+        # Add the current (projection) point's curvature and track width.
+        fieldnames.extend(["c0", "tw0"])
         # 14 yellow ray distances.
         for i in range(1, 15):
             fieldnames.append(f"yr{i}")
@@ -932,10 +933,17 @@ if __name__ == "__main__":
                     row[f"b_c{i}"] = float("nan")
                     row[f"b_tw{i}"] = float("nan")
             
+            # Write current (projection) point's track width and curvature.
+            if i_proj < len(resampled_clx):
+                row["c0"] = curvatures_all[i_proj]
+                row["tw0"] = track_widths_all[i_proj]["width"]
+            else:
+                row["c0"] = float("nan")
+                row["tw0"] = float("nan")
+            
             # Compute raycasting distances for yellow and blue edges.
             yellow_ray_dists, blue_ray_dists = raycast_for_state(
                 car_x, car_z, yaw_curr, ordered_blue, ordered_yellow, max_distance=20.0)
-
             for i, d in enumerate(yellow_ray_dists, start=1):
                 row[f"yr{i}"] = d
             for i, d in enumerate(blue_ray_dists, start=1):

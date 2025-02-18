@@ -27,7 +27,7 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
 
     # Set the main plot axes limits as specified.
     ax_top.set_xlim(-10, 30)
-    ax_top.set_ylim(-5, 5)
+    ax_top.set_ylim(-10, 10)
     ax_top.set_aspect('equal', adjustable='box')
     ax_top.set_title("Local Frame (Car Fixed at (0,0), Heading = 0°)")
     ax_top.set_xlabel("Local X (m)")
@@ -40,12 +40,6 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
     ax_heading.set_xticks([])
     heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
 
-    ax_distance = fig.add_axes([0.88, 0.1, 0.1, 0.19])
-    ax_distance.set_title("Distance to Centerline (m)")
-    ax_distance.set_ylim(-2, 2)
-    ax_distance.set_xticks([])
-    distance_bar = ax_distance.bar(0, 0, width=0.5, color='blue')
-
     # Create animated objects for the local view.
     car_point, = ax_top.plot([], [], 'ko', ms=8, label='Car')
     heading_line, = ax_top.plot([], [], 'r-', lw=2, label='Heading')
@@ -54,6 +48,7 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
     behind_scatter = ax_top.scatter([], [], c='green', s=25, label='Behind Centerline')
     # Line connecting all centerline points (x = 1,2,...; z from CSV).
     centerline_line, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
+    centerline_bline, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
 
     # Define fixed ray angles.
     yellow_angles_deg = np.arange(-20, 111, 10)
@@ -90,7 +85,8 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
         heading_line.set_data([0, heading_length], [0, 0])
 
         # Extract and plot front centerline points.
-        front_points = []
+        dc = frame.get("dc", 0)
+        front_points = [[0,dc]]
         for i in range(1, 21):
             # The x-coordinate is simply i.
             x_val = float(i)
@@ -99,6 +95,7 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
             z_val = frame.get(key_z, float("nan"))
             front_points.append([x_val, z_val])
         front_scatter.set_offsets(np.array(front_points))
+        
 
 # Extract and plot behind centerline points.
         behind_points = []
@@ -114,6 +111,10 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
         centerline_x = np.arange(1, 21)
         centerline_z = [frame.get(f"rel_z{i}", float('nan')) for i in range(1, 21)]
         centerline_line.set_data(centerline_x, centerline_z)
+
+        centerline_bx = np.arange(-5, 0)
+        centerline_bz = [frame.get(f"b_rel_z{i}", float('nan')) for i in range(1, 6)]
+        centerline_bline.set_data(centerline_bx, centerline_bz)
 
         # Update yellow ray lines.
         for i, angle in enumerate(yellow_angles):
@@ -133,12 +134,12 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
         # Bottom subplot: plot track width and curvature using front centerline data.
         # Forward track width and curvature (for points 1 to 20).
         tws, curvs = [], []
-        for i in range(1, 21):
+        for i in range(0, 21):
             key_tw = f"tw{i}"
             key_c = f"c{i}"
             tws.append(frame.get(key_tw, float("nan")))
             curvs.append(frame.get(key_c, float("nan")))
-        local_xs = list(range(1, 21))
+        local_xs = list(range(0, 21))
         track_width_line.set_data(local_xs, tws)
         curvature_line.set_data(local_xs, curvs)
 
@@ -162,18 +163,9 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
             heading_bar[0].set_y(dh)
             heading_bar[0].set_height(-dh)
 
-        # Update the distance-to-centerline bar.
-        dc = frame.get("dc", 0)
-        if dc >= 0:
-            distance_bar[0].set_y(0)
-            distance_bar[0].set_height(dc)
-        else:
-            distance_bar[0].set_y(dc)
-            distance_bar[0].set_height(-dc)
-
-        return (car_point, heading_line, front_scatter, behind_scatter, centerline_line,
+        return (car_point, heading_line, front_scatter, behind_scatter, centerline_line, centerline_bline,
                 *yellow_ray_lines, *blue_ray_lines, track_width_line, track_width_line_back, curvature_line, curvature_line_back,
-                heading_bar[0], distance_bar[0])
+                heading_bar[0])
 
     anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=20, blit=True)
     plt.show()
