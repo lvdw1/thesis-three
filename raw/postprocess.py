@@ -110,7 +110,7 @@ def read_csv_data(file_path):
     with open(file_path, 'r') as f:
         reader = csv.DictReader(f)
         times, x_pos, z_pos, yaw_angle = [], [], [], []
-        long_vel, lat_vel, yaw_rate, long_acc, lat_acc = [], [], [], [], []
+        long_vel, lat_vel, yaw_rate  = [], [], []
 
         for row in reader:
             try:
@@ -121,8 +121,6 @@ def read_csv_data(file_path):
                 long_vel.append(float(row["long_vel"]))
                 lat_vel.append(float(row["lat_vel"]))
                 yaw_rate.append(float(row["yaw_rate"]))
-                long_acc.append(float(row["long_acc"]))
-                lat_acc.append(float(row["lat_acc"]))
             except Exception as e:
                 logging.warning(f"Error parsing row: {row} - {e}")
 
@@ -138,8 +136,6 @@ def read_csv_data(file_path):
             "long_vel": np.array(long_vel),
             "lat_vel": np.array(lat_vel),
             "yaw_rate": np.array(yaw_rate),
-            "long_acc": np.array(long_acc),
-            "lat_acc": np.array(lat_acc),
         }
 
 # --------------------- Resampling and Local Extraction ---------------------
@@ -619,6 +615,27 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
             sign = 1 if (diff_vec[0]*left_normal[0] + diff_vec[1]*left_normal[1]) >= 0 else -1
             best_signed_distance = sign * dist
     return best_signed_distance
+
+# --------------------- Accelerations --------------------------
+def compute_accelerations(time, vx, vy):
+    ax = np.zeros_like(vx)
+    ay = np.zeros_like(vy)
+    
+    # Use forward difference for the first sample.
+    ax[0] = (vx[1] - vx[0]) / (time[1] - time[0])
+    ay[0] = (vy[1] - vy[0]) / (time[1] - time[0])
+    
+    # Use central difference for interior points.
+    for i in range(1, len(time)-1):
+        dt = time[i+1] - time[i-1]
+        ax[i] = (vx[i+1] - vx[i-1]) / dt
+        ay[i] = (vy[i+1] - vy[i-1]) / dt
+    
+    # Use backward difference for the last sample.
+    ax[-1] = (vx[-1] - vx[-2]) / (time[-1] - time[-2])
+    ay[-1] = (vy[-1] - vy[-2]) / (time[-1] - time[-2])
+    
+    return ax, ay
 # --------------------- Animation Function ---------------------
 # LEGACY animation, used for debugging the csv writer and served as base for visualizer.py
 # def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
@@ -831,7 +848,7 @@ if __name__ == "__main__":
     data = shift_car_position(data)
 
     # Parse cones and centerline from the JSON track file.
-    blue_cones, yellow_cones, clx, clz = parse_cone_data("../../sim/tracks/default.json")
+    blue_cones, yellow_cones, clx, clz = parse_cone_data("../../../sim/tracks/default.json")
     
     # Resample the centerline at 1 m intervals.
     resampled_clx, resampled_clz = resample_centerline(clx, clz, resolution=1.0)
@@ -847,7 +864,7 @@ if __name__ == "__main__":
                                                   max_width=10.0)
     
     # Prepare the output CSV with the required headers.
-    output_filename = "output.csv"
+    output_filename = "../mid/session3/run1.csv"
     with open(output_filename, "w", newline="") as csvfile:
         fieldnames = []
         # Front 20 points ahead of the car.
@@ -871,7 +888,8 @@ if __name__ == "__main__":
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         
-        num_frames = len(data["time"])
+        time = data["time"]
+        num_frames = len(time)
         for frame in range(num_frames):
             car_x = data["x_pos"][frame]
             car_z = data["z_pos"][frame]
@@ -956,11 +974,14 @@ if __name__ == "__main__":
             row["dh"] = dh
             
             # Append vehicle dynamics from the input CSV.
+            vx = data["long_vel"]
+            vy = data["lat_vel"]
             row["vx"] = data["long_vel"][frame]
             row["vy"] = data["lat_vel"][frame]
             row["psi_dot"] = data["yaw_rate"][frame]
-            row["ax"] = data["long_acc"][frame]
-            row["ay"] = data["lat_acc"][frame]
+            ax, ay = compute_accelerations(time,vx,vy)
+            row["ax"] = ax[frame]
+            row["ay"] = ay[frame]
             
             writer.writerow(row)
     

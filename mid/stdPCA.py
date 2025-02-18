@@ -3,7 +3,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 
 # 1. Read the data (named "output.py" as per your question)
-df = pd.read_csv("output.csv")
+df = pd.read_csv("session3/run1.csv")
 
 # 2. Select numeric columns
 numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
@@ -24,6 +24,6 @@ df_pca = pd.DataFrame(
     columns=[f"PC{i+1}" for i in range(pca_data.shape[1])]
 )
 
-# 6. Save the PCA-transformed data to "std_output.py"
-df_pca.to_csv("stdPCA_output.csv", index=False)
+# 6. Save the PCA-transformed data 
+df_pca.to_csv("../processed/session3/run1.csv", index=False)
 print("done")

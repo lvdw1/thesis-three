@@ -172,4 +172,4 @@ def animate_run_from_csv_local(output_csv_filename, heading_length=3.0, max_ray_
 
 
 if __name__ == "__main__":
-    animate_run_from_csv_local("output.csv")
+    animate_run_from_csv_local("session3/run1.csv")
