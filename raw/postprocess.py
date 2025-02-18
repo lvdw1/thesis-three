@@ -953,7 +953,7 @@ if __name__ == "__main__":
             row = {}
             # Fill in front (ahead) points.
             for i, d in enumerate(target_x, start=1):
-                row[f"rel_z{i}"] = -target_z[i - 1]
+                row[f"rel_z{i}"] = target_z[i - 1]
                 idx = i_proj + int(round(d))
                 if idx < len(resampled_clx):
                     row[f"c{i}"] = curvatures_all[idx]
@@ -964,7 +964,7 @@ if __name__ == "__main__":
             
             # Fill in behind points.
             for i, d in enumerate(target_x_b, start=1):
-                row[f"b_rel_z{i}"] = -target_z_b[i - 1]
+                row[f"b_rel_z{i}"] = target_z_b[i - 1]
                 idx_b = i_proj + int(round(d))
                 if 0 <= idx_b < len(resampled_clx):
                     row[f"b_c{i}"] = curvatures_all[idx_b]
@@ -992,7 +992,7 @@ if __name__ == "__main__":
             # Compute the signed distance to the centerline and heading difference.
             dc = compute_signed_distance_to_centerline(car_x, car_z, resampled_clx, resampled_clz)
             dh = compute_heading_difference(car_x, car_z, yaw_curr, resampled_clx, resampled_clz)
-            row["dc"] = dc
+            row["dc"] = -dc
             row["dh"] = dh
             
             # Append vehicle dynamics from the input CSV.
