@@ -77,9 +77,20 @@ def order_cones_by_centerline(cones, centerline_x, centerline_z):
 def create_track_edges(blue_cones, yellow_cones, centerline_x, centerline_z):
     """
     Creates track edges by ordering the blue and yellow cones along the centerline.
+    Ensures that the edges form a closed loop.
     """
     ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
     ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
+    
+    # Check if the first and last points are the same (or nearly the same).
+    if ordered_blue and (np.hypot(ordered_blue[0][0] - ordered_blue[-1][0],
+                                  ordered_blue[0][1] - ordered_blue[-1][1]) > 1e-6):
+        ordered_blue.append(ordered_blue[0])
+    
+    if ordered_yellow and (np.hypot(ordered_yellow[0][0] - ordered_yellow[-1][0],
+                                    ordered_yellow[0][1] - ordered_yellow[-1][1]) > 1e-6):
+        ordered_yellow.append(ordered_yellow[0])
+    
     return ordered_blue, ordered_yellow
 
 # --------------------- CSV Data Function ---------------------
@@ -447,9 +458,9 @@ def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, order
         
         # Define normals:
         # Left normal (points toward the yellow edge) = (-T_y, T_x)
-        right_normal = (-T[1], T[0])
+        left_normal = (-T[1], T[0])
         # Right normal (points toward the blue edge) = (T[1], -T[0])
-        left_normal = (T[1], -T[0])
+        right_normal = (T[1], -T[0])
         
         center = pts[i]
         
@@ -857,10 +868,14 @@ if __name__ == "__main__":
     # Parse cones and centerline from the JSON track file.
     blue_cones, yellow_cones, clx, clz = parse_cone_data("../../../sim/tracks/default.json")
     
+    # Reverse the centerline to match the car's driving direction
+    clx = clx[::-1]
+    clz = clz[::-1]
+    
     # Resample the centerline at 1 m intervals.
     resampled_clx, resampled_clz = resample_centerline(clx, clz, resolution=1.0)
     centerline_pts = list(zip(resampled_clx, resampled_clz))
-    
+
     # Get the ordered track edges (used for raycasting and track width computations).
     ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx, clz)
     
@@ -938,7 +953,7 @@ if __name__ == "__main__":
             row = {}
             # Fill in front (ahead) points.
             for i, d in enumerate(target_x, start=1):
-                row[f"rel_z{i}"] = target_z[i - 1]
+                row[f"rel_z{i}"] = -target_z[i - 1]
                 idx = i_proj + int(round(d))
                 if idx < len(resampled_clx):
                     row[f"c{i}"] = curvatures_all[idx]
@@ -949,7 +964,7 @@ if __name__ == "__main__":
             
             # Fill in behind points.
             for i, d in enumerate(target_x_b, start=1):
-                row[f"b_rel_z{i}"] = target_z_b[i - 1]
+                row[f"b_rel_z{i}"] = -target_z_b[i - 1]
                 idx_b = i_proj + int(round(d))
                 if 0 <= idx_b < len(resampled_clx):
                     row[f"b_c{i}"] = curvatures_all[idx_b]
