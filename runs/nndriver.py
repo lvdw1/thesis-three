@@ -40,6 +40,7 @@ from sklearn.neural_network import MLPRegressor
 # ---------------------------------------------------------------------
 
 def compute_centerline_cumulative_distance(centerline_x, centerline_z):
+    # Creates a distance array for each centerline point starting from some reference
     cum_dist = [0.0]
     for i in range(1, len(centerline_x)):
         dx = centerline_x[i] - centerline_x[i - 1]
@@ -49,6 +50,7 @@ def compute_centerline_cumulative_distance(centerline_x, centerline_z):
     return cum_dist
 
 def parse_cone_data(json_file_path):
+    # Reads ALL cone location data and returns it together with centerline coords
     with open(json_file_path, 'r') as file:
         data = json.load(file)
 
@@ -67,6 +69,7 @@ def parse_cone_data(json_file_path):
     return blue_cones, yellow_cones, clx, clz
 
 def project_cone_onto_centerline(cone, centerline_x, centerline_z, cum_dist):
+    # functionality in name
     cone_x, cone_z = cone
     min_dist = float('inf')
     best_idx = 0
@@ -78,6 +81,7 @@ def project_cone_onto_centerline(cone, centerline_x, centerline_z, cum_dist):
     return cum_dist[best_idx]
 
 def order_cones_by_centerline(cones, centerline_x, centerline_z):
+    # functionality in name
     if not cones:
         return []
     cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
@@ -90,6 +94,7 @@ def order_cones_by_centerline(cones, centerline_x, centerline_z):
     return ordered_cones
 
 def create_track_edges(blue_cones, yellow_cones, centerline_x, centerline_z):
+    # connects cones (in order) to define track edges, connects first and last cones as well to create full loop
     ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
     ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
 
@@ -104,9 +109,7 @@ def create_track_edges(blue_cones, yellow_cones, centerline_x, centerline_z):
     return ordered_blue, ordered_yellow
 
 def read_csv_data(file_path):
-    """
-    Reads CSV data and returns a dict of numpy arrays.
-    """
+    # this is to read recorded CSVs and output time, xpos, zpos, yaw, longvel, latvel, yawrate & outputs (steering, throttle & brake)
     if not os.path.exists(file_path):
         logging.error(f"CSV file not found: {file_path}")
         return None
@@ -150,6 +153,7 @@ def read_csv_data(file_path):
     }
 
 def shift_car_position(data, shift_distance=1.5):
+    # somehow car was always shifted one half car-width in the local lateral axis
     if data is None:
         return None
     for i in range(len(data["x_pos"])):
@@ -160,7 +164,24 @@ def shift_car_position(data, shift_distance=1.5):
         data["z_pos"][i] += offset_z
     return data
 
+def shift_position_single(x, z, yaw_deg, shift_distance=1.5):
+    """
+    Shift a single (x, z) position by a given lateral offset based on yaw. (for realtime driver)
+    """
+    yaw = math.radians(yaw_deg)
+    offset_x = shift_distance * math.sin(yaw)
+    offset_z = -shift_distance * math.cos(yaw)
+    return x + offset_x, z + offset_z
+
+def find_projection_index(car_x, car_z, centerline_pts):
+    """
+    Find the index of the centerline point closest to (car_x, car_z). (for realtime driver)
+    """
+    dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in centerline_pts]
+    return int(np.argmin(dists))
+
 def resample_centerline(centerline_x, centerline_z, resolution=1.0):
+    # resamples centerline such that all points are equidistant at 1m
     cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
     total_length = cum_dist[-1]
     new_dists = np.arange(0, total_length + resolution, resolution)
@@ -169,9 +190,11 @@ def resample_centerline(centerline_x, centerline_z, resolution=1.0):
     return new_x.tolist(), new_z.tolist()
 
 def cross2D(a, b):
+    # cross product
     return a[0]*b[1] - a[1]*b[0]
 
 def ray_segment_intersection(ray_origin, ray_direction, seg_start, seg_end):
+    # intersection between cast ray and track edge
     p = ray_origin
     r = ray_direction
     q = seg_start
@@ -187,6 +210,7 @@ def ray_segment_intersection(ray_origin, ray_direction, seg_start, seg_end):
     return None
 
 def compute_ray_edge_intersection_distance(ray_origin, ray_direction, edge_points, max_distance=10.0):
+    # find for each ray the distance at which it intersects a track edge
     best_t = max_distance
     found = False
     for i in range(len(edge_points) - 1):
@@ -199,6 +223,7 @@ def compute_ray_edge_intersection_distance(ray_origin, ray_direction, edge_point
     return best_t if found else None
 
 def raycast_for_state(car_x, car_z, car_heading, blue_edge, yellow_edge, max_distance=20):
+    # define the rays for a certain car state
     yellow_angles_deg = np.arange(-20, 111, 10)
     blue_angles_deg   = np.arange( 20, -111, -10)
 
@@ -234,6 +259,7 @@ def raycast_for_state(car_x, car_z, car_heading, blue_edge, yellow_edge, max_dis
     return yellow_ray_distances, blue_ray_distances
 
 def compute_local_curvature(centerline_x, centerline_z, window_size=5):
+    # functionality in name
     N = len(centerline_x)
     curvatures = [0.0] * N
     if window_size < 3:
@@ -272,6 +298,7 @@ def compute_local_curvature(centerline_x, centerline_z, window_size=5):
     return curvatures
 
 def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, ordered_yellow, max_width=10.0):
+    # functionality in name
     results = []
     pts = list(zip(resampled_clx, resampled_clz))
     N = len(pts)
@@ -306,6 +333,7 @@ def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, order
     return results
 
 def compute_heading_difference(car_x, car_z, car_heading, centerline_x, centerline_z):
+    # functionality in name
     N = len(centerline_x)
     track_headings = np.zeros(N)
     for i in range(N):
@@ -336,6 +364,7 @@ def compute_heading_difference(car_x, car_z, car_heading, centerline_x, centerli
     return heading_diff
 
 def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline_z):
+    # basically the same info as the perpendicular rays together with track width, could be omitted I think?
     pts = list(zip(centerline_x, centerline_z))
     best_distance = float('inf')
     best_signed_distance = 0.0
@@ -365,24 +394,44 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
             best_signed_distance = sign*dist
     return best_signed_distance
 
-def compute_accelerations(time, vx, vy):
-    ax = np.zeros_like(vx)
-    ay = np.zeros_like(vy)
-    if len(time) < 2:
-        return ax, ay
 
-    ax[0] = (vx[1] - vx[0]) / (time[1] - time[0])
-    ay[0] = (vy[1] - vy[0]) / (time[1] - time[0])
-    for i in range(1, len(time)-1):
-        dt = time[i+1] - time[i-1]
-        if abs(dt) < 1e-9:
-            ax[i] = 0.0
-            ay[i] = 0.0
-        else:
-            ax[i] = (vx[i+1] - vx[i-1]) / dt
-            ay[i] = (vy[i+1] - vy[i-1]) / dt
-    ax[-1] = (vx[-1] - vx[-2]) / (time[-1] - time[-2])
-    ay[-1] = (vy[-1] - vy[-2]) / (time[-1] - time[-2])
+def compute_acceleration(time, vx, vy):
+    """
+    Compute acceleration using backward differencing for array inputs.
+
+    Parameters:
+        time (array-like): Array of time stamps.
+        vx (array-like): Array of velocities in the x-direction.
+        vy (array-like): Array of velocities in the y-direction.
+
+    Returns:
+        tuple: Two numpy arrays (ax, ay) of the same length as the input arrays.
+        
+    The acceleration is computed as:
+        a_x[i] = (vx[i+1] - vx[i]) / (time[i+1] - time[i])
+    for i = 0 ... N-2, and the last acceleration is repeated.
+    """
+    # Convert inputs to numpy arrays
+    time = np.asarray(time)
+    vx = np.asarray(vx)
+    vy = np.asarray(vy)
+    
+    # Compute differences
+    dt = np.diff(time)
+    # Avoid division by nearly zero values
+    dt[dt < 1e-9] = 1e-9
+    
+    dvx = np.diff(vx)
+    dvy = np.diff(vy)
+    
+    # Compute acceleration using backward differencing (length: N-1)
+    ax = dvx / dt
+    ay = dvy / dt
+
+    # Pad the last element to match the original length
+    ax = np.concatenate([ax, [ax[-1]]])
+    ay = np.concatenate([ay, [ay[-1]]])
+    
     return ax, ay
 
 def run_tcp_server(realtime_driver, host='127.0.0.1', port=65432):
@@ -444,7 +493,7 @@ def run_tcp_server(realtime_driver, host='127.0.0.1', port=65432):
                 brake_in=0)
 
             # Send predictions back
-            message = f"{st_pred},{th_pred},{0}\n"
+            message = f"{st_pred},{th_pred},{br_pred}\n"
             print(f"Sending: {message.strip()}")
             client_socket.sendall(message.encode())
 
@@ -482,9 +531,6 @@ class FeatureTransformer:
 
         self.numeric_cols = numeric_cols
         self.exclude_cols = exclude_cols
-
-        from sklearn.preprocessing import StandardScaler
-        from sklearn.decomposition import PCA
 
         self.scaler = StandardScaler()
         scaled_data = self.scaler.fit_transform(df[numeric_cols])
@@ -631,12 +677,11 @@ class NNDriver:
         """
         return self.model.loss_
 
+# Modified SingleStepPostprocessor that uses global functions
 class SingleStepPostprocessor:
     """
-    Computes the same features as your offline pipeline, 
-    but for a single time-step at a time.
+    Computes features for a single time step using global functions.
     """
-
     def __init__(self, 
                  resampled_centerline_x, 
                  resampled_centerline_z,
@@ -646,26 +691,6 @@ class SingleStepPostprocessor:
                  ordered_yellow,
                  shift_distance=1.5,
                  max_ray_distance=20.0):
-        """
-        Store all static track data and configuration needed 
-        for single-step feature computation.
-        
-        Parameters
-        ----------
-        resampled_centerline_x, resampled_centerline_z : arrays
-            The track's centerline points (already reversed & resampled).
-        track_width_data : list of dict
-            Precomputed local track widths from the offline pipeline 
-            (each dict has {"center": (x,z), "width": w}).
-        curvature_data : list or array
-            Precomputed curvature for each centerline point.
-        ordered_blue, ordered_yellow : lists of (x,z)
-            The track edges for raycasting.
-        shift_distance : float
-            Same shift you did offline, if needed.
-        max_ray_distance : float
-            The maximum distance for ray intersection.
-        """
         self.clx = resampled_centerline_x
         self.clz = resampled_centerline_z
         self.track_widths_all = track_width_data
@@ -675,91 +700,13 @@ class SingleStepPostprocessor:
         self.shift_distance   = shift_distance
         self.max_ray_distance = max_ray_distance
 
-        # We keep them as list of tuples for quick usage
+        # Precompute centerline points for quick distance computation.
         self.centerline_pts   = list(zip(self.clx, self.clz))
 
-        # We also prepare to store the last time, last vx, last vy 
-        # if we want to compute accelerations:
+        # For computing acceleration (stateful)
         self.last_time = None
         self.last_vx   = None
         self.last_vy   = None
-
-    def _shift_car_position(self, x, z, yaw_deg):
-        """
-        Shift the car position if you used the same offset offline.
-        """
-        yaw = math.radians(yaw_deg)
-        offset_x = self.shift_distance * math.sin(yaw)
-        offset_z = -self.shift_distance * math.cos(yaw)
-        return x + offset_x, z + offset_z
-
-    def _compute_acceleration(self, time, vx, vy):
-        """
-        Compute finite-difference acceleration from the previous step.
-        """
-        if self.last_time is None:
-            # First step => no previous data
-            ax = 0.0
-            ay = 0.0
-        else:
-            dt = time - self.last_time
-            if abs(dt) < 1e-9:
-                ax, ay = 0.0, 0.0
-            else:
-                ax = (vx - self.last_vx) / dt
-                ay = (vy - self.last_vy) / dt
-
-        # Update stored values
-        self.last_time = time
-        self.last_vx   = vx
-        self.last_vy   = vy
-        return ax, ay
-
-    def _ray_segment_intersection(self, ray_origin, ray_direction, seg_start, seg_end):
-        """
-        Same as your ray_segment_intersection. 
-        (Omitted here for brevity.)
-        """
-        # ...
-        pass  # you can paste your existing code
-
-    def _raycast_for_state(self, car_x, car_z, car_heading):
-        """
-        Single-step version to compute ray distances to track edges
-        (ordered_blue, ordered_yellow).
-        """
-        import numpy as np
-        yellow_angles_deg = np.arange(-20, 111, 10)
-        blue_angles_deg   = np.arange( 20, -111, -10)
-
-        def cast_rays(edge, angles_deg):
-            dists = []
-            for rel_angle_deg in angles_deg:
-                rel_angle = math.radians(rel_angle_deg)
-                ray_angle = car_heading + rel_angle
-                ray_dir = (math.cos(ray_angle), math.sin(ray_angle))
-                closest_distance = self.max_ray_distance
-                # check each segment
-                for i in range(len(edge)-1):
-                    seg_start = edge[i]
-                    seg_end   = edge[i+1]
-                    t_val = self._ray_segment_intersection((car_x, car_z), ray_dir, seg_start, seg_end)
-                    if t_val is not None and t_val < closest_distance:
-                        closest_distance = t_val
-                dists.append(closest_distance)
-            return dists
-
-        yellow_ray_distances = cast_rays(self.ordered_yellow, yellow_angles_deg)
-        blue_ray_distances   = cast_rays(self.ordered_blue,   blue_angles_deg)
-        return yellow_ray_distances, blue_ray_distances
-
-    def _find_projection_index(self, car_x, car_z):
-        """
-        Find the centerline point closest to (car_x, car_z).
-        """
-        dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in self.centerline_pts]
-        i_min = int(np.argmin(dists))
-        return i_min
 
     def compute_features_for_single_step(self, 
                                          time, 
@@ -773,40 +720,57 @@ class SingleStepPostprocessor:
                                          throttle, 
                                          brake):
         """
-        Returns a dict of the same features you used offline, but for this single step.
-
-        1) Shifts car position if needed.
-        2) Compute acceleration from last step (if you want).
-        3) Raycast to edges.
-        4) Dist to centerline, heading difference, track width, curvature, etc.
-        5) Return as a single-row DataFrame for further transformation.
+        Compute a feature vector for one time step by:
+          1) Shifting the car position (using the global helper)
+          2) Computing acceleration (stateful, using backward differencing on arrays)
+          3) Raycasting using the global function `raycast_for_state`
+          4) Finding the projection index (using the global helper)
+          5) Computing signed distance and heading difference (global functions)
+          6) Packaging everything into a DataFrame row.
         """
-        # 1) Shift
-        x_shifted, z_shifted = self._shift_car_position(x_pos, z_pos, yaw_angle_deg)
-
-        # 2) Accel
-        ax, ay = self._compute_acceleration(time, long_vel, lat_vel)
-
-        # 3) Raycast
+        # 1) Shift the car position using the global helper.
+        x_shifted, z_shifted = shift_position_single(x_pos, z_pos, yaw_angle_deg, self.shift_distance)
+        
+        # 2) Compute acceleration (stateful) using backward differencing.
+        # If no previous data is available, default acceleration to zero.
+        if self.last_time is None or self.last_vx is None or self.last_vy is None:
+            ax, ay = 0.0, 0.0
+        else:
+            # Create arrays with two elements: previous and current values.
+            time_arr = np.array([self.last_time, time])
+            vx_arr   = np.array([self.last_vx, long_vel])
+            vy_arr   = np.array([self.last_vy, lat_vel])
+            # The compute_acceleration function (defined globally) returns arrays of length 1.
+            ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
+            ax, ay = ax_arr[0], ay_arr[0]
+        
+        # Update state with current time and velocities.
+        self.last_time = time
+        self.last_vx   = long_vel
+        self.last_vy   = lat_vel
+        
+        # 3) Raycasting (global function expects yaw in radians)
         yaw_rad = math.radians(yaw_angle_deg)
-        yr_dists, br_dists = self._raycast_for_state(x_shifted, z_shifted, yaw_rad)
-
-        # 4) Dist to centerline, heading difference
-        i_proj = self._find_projection_index(x_shifted, z_shifted)
-        # e.g., track width & curvature at i_proj
+        yr_dists, br_dists = raycast_for_state(
+            x_shifted, z_shifted, yaw_rad,
+            self.ordered_blue, self.ordered_yellow,
+            max_distance=self.max_ray_distance
+        )
+        
+        # 4) Find the closest centerline point using the global helper.
+        i_proj = find_projection_index(x_shifted, z_shifted, self.centerline_pts)
         if 0 <= i_proj < len(self.track_widths_all):
             tw0 = self.track_widths_all[i_proj]["width"]
             c0  = self.curvatures_all[i_proj]
         else:
             tw0 = float('nan')
             c0  = float('nan')
-
-        # Signed distance
+        
+        # 5) Compute signed distance and heading difference using global functions.
         dc = compute_signed_distance_to_centerline(x_shifted, z_shifted, self.clx, self.clz)
-        # Heading diff
         dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad, self.clx, self.clz)
-
-        # 5) Collect into a dict
+        
+        # 6) Package into a dict (and then a DataFrame row)
         row_dict = {
             "time": time,
             "x_pos": x_shifted,
@@ -820,23 +784,19 @@ class SingleStepPostprocessor:
             "brake": brake,
             "ax": ax,
             "ay": ay,
-            "dist_center": -dc,    # or dc
+            "dist_center": -dc,  # Adjust sign as desired.
             "head_diff": dh,
             "track_width": tw0,
             "curvature": c0,
         }
-
-        # Insert ray distances
         for idx, dist_val in enumerate(yr_dists, start=1):
             row_dict[f"yr{idx}"] = dist_val
         for idx, dist_val in enumerate(br_dists, start=1):
             row_dict[f"br{idx}"] = dist_val
 
-        # Return as a single-row DataFrame
         df_single = pd.DataFrame([row_dict])
         return df_single
-
-
+    
 # ---------------------------------------------------------------------
 # ------------------ MAIN ORCHESTRATOR CLASS --------------------------
 # ---------------------------------------------------------------------
@@ -887,7 +847,7 @@ class NNDriverFramework:
         time_arr = data_dict["time"]
         vx_arr   = data_dict["long_vel"]
         vy_arr   = data_dict["lat_vel"]
-        ax_arr, ay_arr = compute_accelerations(time_arr, vx_arr, vy_arr)
+        ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
 
         for i in range(len(time_arr)):
             car_x   = data_dict["x_pos"][i]
@@ -972,7 +932,6 @@ class NNDriverFramework:
         # 5) We want the last 3 columns to be the outputs: (steering, throttle, brake)
         #    The DF from transformer is: [PC1..PCn, steering, throttle, brake]
         #    Train the NN on that.
-        #    But let's do a train/test split first, for example:
 
         # Input columns = all columns that start with "PC"
         pc_cols = [c for c in df_trans.columns if c.startswith("PC")]
@@ -1045,6 +1004,8 @@ class NNDriverFramework:
 
         print("[NNDriverFramework] Inference complete.")
 
+
+# The RealtimeDriver class remains mostly unchanged, as it instantiates the SingleStepPostprocessor.
 class RealtimeDriver:
     def __init__(self, 
                  transformer_path="transformer.joblib", 
@@ -1053,26 +1014,22 @@ class RealtimeDriver:
                  shift_distance=1.5, 
                  max_ray_distance=20.0):
         """
-        1) Load the pre-fitted StandardScaler+PCA (FeatureTransformer).
-        2) Load the trained MLPRegressor (NNDriver).
-        3) Parse track geometry, resample centerline, compute track edges, 
-           curvature, track width.
-        4) Create a SingleStepPostprocessor to do the real-time feature extraction.
+        Loads the fitted transformer, NN model, and track geometry.
+        Initializes the SingleStepPostprocessor (which now uses global functions).
         """
-        # 1) Load pipeline
+        # 1) Load the pre-fitted StandardScaler+PCA.
         self.transformer = FeatureTransformer()
         self.transformer.load(transformer_path)
         print(f"[RealtimeDriver] Loaded transformer from {transformer_path}")
 
-        # 2) Load model
-        self.nn_model = joblib.load(model_path)  # This is an instance of NNDriver
+        # 2) Load the trained NN model.
+        self.nn_model = joblib.load(model_path)  # This is an instance of NNDriver.
         print(f"[RealtimeDriver] Loaded NN model from {model_path}")
 
-        # 3) Parse track geometry
+        # 3) Parse track geometry.
         from pathlib import Path
         track_json = Path(track_json)
         with open(track_json, 'r') as f:
-            import json
             data = json.load(f)
         x_values = data.get("x", [])
         y_values = data.get("y", [])
@@ -1080,25 +1037,25 @@ class RealtimeDriver:
         clx      = data.get("centerline_x", [])
         clz      = data.get("centerline_y", [])
         
-        # Build cones
-        blue_cones = [(x,z) for x,z,c in zip(x_values, y_values, colors) if c.lower()=="blue"]
-        yellow_cones= [(x,z) for x,z,c in zip(x_values, y_values, colors) if c.lower()=="yellow"]
+        # Build cones.
+        blue_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "blue"]
+        yellow_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "yellow"]
 
-        # Reverse centerline to match your offline
+        # Reverse centerline to match offline processing.
         clx_rev = clx[::-1]
         clz_rev = clz[::-1]
 
-        # Resample
+        # Resample the centerline.
         r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
 
-        # Create edges
+        # Create track edges.
         ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
         
-        # Curvature + track width
+        # Compute curvature and track width.
         curvature_data   = compute_local_curvature(r_clx, r_clz, window_size=5)
         track_width_data = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
 
-        # 4) Make a single-step postprocessor
+        # 4) Initialize the SingleStepPostprocessor (which now uses the global functions).
         self.single_step_processor = SingleStepPostprocessor(
             resampled_centerline_x=r_clx,
             resampled_centerline_z=r_clz,
@@ -1123,12 +1080,14 @@ class RealtimeDriver:
                             throttle_in, 
                             brake_in):
         """
-        Given the real-time sensor/vehicle data at one time step, 
-        do the same postprocessing -> transform -> NN predict -> return commands.
-        
-        Returns: (pred_steering, pred_throttle, pred_brake)
+        Processes a single time step:
+          1) Computes features using SingleStepPostprocessor.
+          2) Transforms the features using the pre-fitted transformer.
+          3) Predicts control commands with the NN model.
+        Returns:
+          (predicted_steering, predicted_throttle, predicted_brake)
         """
-        # 1) Build the feature row
+        # Compute the feature row.
         df_single = self.single_step_processor.compute_features_for_single_step(
             time=time,
             x_pos=x_pos,
@@ -1141,14 +1100,11 @@ class RealtimeDriver:
             throttle=throttle_in,
             brake=brake_in
         )
-
-        # 2) Apply the same StandardScaler + PCA
+        # Apply the same StandardScaler + PCA transformation.
         df_trans = self.transformer.transform(df_single)
-
-        # 3) NN predict
-        predictions = self.nn_model.predict(df_trans)  # shape (1,3) 
+        # Predict using the NN model.
+        predictions = self.nn_model.predict(df_trans)  # Expected shape: (1,3)
         st_pred, th_pred, br_pred = predictions[0]
-
         return (st_pred, th_pred, br_pred)
 
 # ---------------------------------------------------------------------
