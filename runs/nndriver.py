@@ -15,6 +15,10 @@ Usage:
   python nndriver.py --mode infer --csv new_data.csv --json ../../../sim/tracks/default.json
      (Loads the pre-fitted StandardScaler & PCA, processes each timestep,
       applies the NN for real-time/inference.)
+
+  python nndriver.py --mode realtime --json ../../../sim/tracks/default.json --host 127.0.0.1 --port 65432
+     (Runs the NN in realtime mode via a TCP server; each sensor reading is postprocessed
+      (including computing local centerline features) before being fed to the NN.)
 """
 
 import os
@@ -40,7 +44,6 @@ from sklearn.neural_network import MLPRegressor
 # ---------------------------------------------------------------------
 
 def compute_centerline_cumulative_distance(centerline_x, centerline_z):
-    # Creates a distance array for each centerline point starting from some reference
     cum_dist = [0.0]
     for i in range(1, len(centerline_x)):
         dx = centerline_x[i] - centerline_x[i - 1]
@@ -50,26 +53,20 @@ def compute_centerline_cumulative_distance(centerline_x, centerline_z):
     return cum_dist
 
 def parse_cone_data(json_file_path):
-    # Reads ALL cone location data and returns it together with centerline coords
     with open(json_file_path, 'r') as file:
         data = json.load(file)
-
     x_values = data.get("x", [])
     y_values = data.get("y", [])
     colors   = data.get("color", [])
     clx      = data.get("centerline_x", [])
-    clz      = data.get("centerline_y", [])  # Typically "z" coords
-
+    clz      = data.get("centerline_y", [])
     if not (len(x_values) == len(y_values) == len(colors)):
         raise ValueError("JSON file data lengths for 'x', 'y', 'color' must be equal.")
-
     blue_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "blue"]
     yellow_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "yellow"]
-
     return blue_cones, yellow_cones, clx, clz
 
 def project_cone_onto_centerline(cone, centerline_x, centerline_z, cum_dist):
-    # functionality in name
     cone_x, cone_z = cone
     min_dist = float('inf')
     best_idx = 0
@@ -81,7 +78,6 @@ def project_cone_onto_centerline(cone, centerline_x, centerline_z, cum_dist):
     return cum_dist[best_idx]
 
 def order_cones_by_centerline(cones, centerline_x, centerline_z):
-    # functionality in name
     if not cones:
         return []
     cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
@@ -94,32 +90,25 @@ def order_cones_by_centerline(cones, centerline_x, centerline_z):
     return ordered_cones
 
 def create_track_edges(blue_cones, yellow_cones, centerline_x, centerline_z):
-    # connects cones (in order) to define track edges, connects first and last cones as well to create full loop
     ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
     ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
-
     if ordered_blue and (np.hypot(ordered_blue[0][0] - ordered_blue[-1][0],
                                   ordered_blue[0][1] - ordered_blue[-1][1]) > 1e-6):
         ordered_blue.append(ordered_blue[0])
-
     if ordered_yellow and (np.hypot(ordered_yellow[0][0] - ordered_yellow[-1][0],
                                     ordered_yellow[0][1] - ordered_yellow[-1][1]) > 1e-6):
         ordered_yellow.append(ordered_yellow[0])
-
     return ordered_blue, ordered_yellow
 
 def read_csv_data(file_path):
-    # this is to read recorded CSVs and output time, xpos, zpos, yaw, longvel, latvel, yawrate & outputs (steering, throttle & brake)
     if not os.path.exists(file_path):
         logging.error(f"CSV file not found: {file_path}")
         return None
-
     with open(file_path, 'r') as f:
         reader = csv.DictReader(f)
         times, x_pos, z_pos, yaw_angle = [], [], [], []
         long_vel, lat_vel, yaw_rate  = [], [], []
         steering, throttle, brake = [], [], []
-
         for row in reader:
             try:
                 times.append(float(row["time"]))
@@ -134,26 +123,23 @@ def read_csv_data(file_path):
                 brake.append(float(row["brake"]))
             except Exception as e:
                 logging.warning(f"Error parsing row: {row} - {e}")
-
     if not times:
         logging.error("No data loaded from CSV.")
         return None
-
     return {
-        "time":      np.array(times),
-        "x_pos":     np.array(x_pos),
-        "z_pos":     np.array(z_pos),
+        "time": np.array(times),
+        "x_pos": np.array(x_pos),
+        "z_pos": np.array(z_pos),
         "yaw_angle": np.array(yaw_angle),
-        "long_vel":  np.array(long_vel),
-        "lat_vel":   np.array(lat_vel),
-        "yaw_rate":  np.array(yaw_rate),
-        "steering":  np.array(steering),
-        "throttle":  np.array(throttle),
-        "brake":     np.array(brake),
+        "long_vel": np.array(long_vel),
+        "lat_vel": np.array(lat_vel),
+        "yaw_rate": np.array(yaw_rate),
+        "steering": np.array(steering),
+        "throttle": np.array(throttle),
+        "brake": np.array(brake),
     }
 
 def shift_car_position(data, shift_distance=1.5):
-    # somehow car was always shifted one half car-width in the local lateral axis
     if data is None:
         return None
     for i in range(len(data["x_pos"])):
@@ -165,23 +151,16 @@ def shift_car_position(data, shift_distance=1.5):
     return data
 
 def shift_position_single(x, z, yaw_deg, shift_distance=1.5):
-    """
-    Shift a single (x, z) position by a given lateral offset based on yaw. (for realtime driver)
-    """
     yaw = math.radians(yaw_deg)
     offset_x = shift_distance * math.sin(yaw)
     offset_z = -shift_distance * math.cos(yaw)
     return x + offset_x, z + offset_z
 
 def find_projection_index(car_x, car_z, centerline_pts):
-    """
-    Find the index of the centerline point closest to (car_x, car_z). (for realtime driver)
-    """
     dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in centerline_pts]
     return int(np.argmin(dists))
 
 def resample_centerline(centerline_x, centerline_z, resolution=1.0):
-    # resamples centerline such that all points are equidistant at 1m
     cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
     total_length = cum_dist[-1]
     new_dists = np.arange(0, total_length + resolution, resolution)
@@ -190,11 +169,9 @@ def resample_centerline(centerline_x, centerline_z, resolution=1.0):
     return new_x.tolist(), new_z.tolist()
 
 def cross2D(a, b):
-    # cross product
     return a[0]*b[1] - a[1]*b[0]
 
 def ray_segment_intersection(ray_origin, ray_direction, seg_start, seg_end):
-    # intersection between cast ray and track edge
     p = ray_origin
     r = ray_direction
     q = seg_start
@@ -210,12 +187,11 @@ def ray_segment_intersection(ray_origin, ray_direction, seg_start, seg_end):
     return None
 
 def compute_ray_edge_intersection_distance(ray_origin, ray_direction, edge_points, max_distance=10.0):
-    # find for each ray the distance at which it intersects a track edge
     best_t = max_distance
     found = False
     for i in range(len(edge_points) - 1):
         seg_start = edge_points[i]
-        seg_end   = edge_points[i+1]
+        seg_end = edge_points[i+1]
         t_val = ray_segment_intersection(ray_origin, ray_direction, seg_start, seg_end)
         if t_val is not None and t_val < best_t:
             best_t = t_val
@@ -223,43 +199,37 @@ def compute_ray_edge_intersection_distance(ray_origin, ray_direction, edge_point
     return best_t if found else None
 
 def raycast_for_state(car_x, car_z, car_heading, blue_edge, yellow_edge, max_distance=20):
-    # define the rays for a certain car state
     yellow_angles_deg = np.arange(-20, 111, 10)
-    blue_angles_deg   = np.arange( 20, -111, -10)
-
+    blue_angles_deg = np.arange(20, -111, -10)
     yellow_ray_distances = []
-    blue_ray_distances   = []
-
+    blue_ray_distances = []
     for rel_angle_deg in yellow_angles_deg:
         rel_angle = math.radians(rel_angle_deg)
         ray_angle = car_heading + rel_angle
-        ray_dir   = (math.cos(ray_angle), math.sin(ray_angle))
+        ray_dir = (math.cos(ray_angle), math.sin(ray_angle))
         closest_distance = max_distance
         for i in range(len(yellow_edge)-1):
             seg_start = yellow_edge[i]
-            seg_end   = yellow_edge[i+1]
+            seg_end = yellow_edge[i+1]
             t_val = ray_segment_intersection((car_x, car_z), ray_dir, seg_start, seg_end)
             if t_val is not None and t_val < closest_distance:
                 closest_distance = t_val
         yellow_ray_distances.append(closest_distance)
-
     for rel_angle_deg in blue_angles_deg:
         rel_angle = math.radians(rel_angle_deg)
         ray_angle = car_heading + rel_angle
-        ray_dir   = (math.cos(ray_angle), math.sin(ray_angle))
+        ray_dir = (math.cos(ray_angle), math.sin(ray_angle))
         closest_distance = max_distance
         for i in range(len(blue_edge)-1):
             seg_start = blue_edge[i]
-            seg_end   = blue_edge[i+1]
+            seg_end = blue_edge[i+1]
             t_val = ray_segment_intersection((car_x, car_z), ray_dir, seg_start, seg_end)
             if t_val is not None and t_val < closest_distance:
                 closest_distance = t_val
         blue_ray_distances.append(closest_distance)
-
     return yellow_ray_distances, blue_ray_distances
 
 def compute_local_curvature(centerline_x, centerline_z, window_size=5):
-    # functionality in name
     N = len(centerline_x)
     curvatures = [0.0] * N
     if window_size < 3:
@@ -267,10 +237,9 @@ def compute_local_curvature(centerline_x, centerline_z, window_size=5):
     if window_size % 2 == 0:
         window_size += 1
     half_window = window_size // 2
-
     for i in range(N):
         start = max(0, i - half_window)
-        end   = min(N, i + half_window + 1)
+        end = min(N, i + half_window + 1)
         x_local = np.array(centerline_x[start:end])
         y_local = np.array(centerline_z[start:end])
         if len(x_local) < 3:
@@ -289,8 +258,8 @@ def compute_local_curvature(centerline_x, centerline_z, window_size=5):
             R = math.sqrt(R_sq)
             curvature = 1.0 / R
             if i > 0 and i < N-1:
-                vec1 = np.array([centerline_x[i - 1] - center_x, centerline_z[i - 1] - center_y])
-                vec2 = np.array([centerline_x[i + 1] - center_x, centerline_z[i + 1] - center_y])
+                vec1 = np.array([centerline_x[i-1] - center_x, centerline_z[i-1] - center_y])
+                vec2 = np.array([centerline_x[i+1] - center_x, centerline_z[i+1] - center_y])
                 cross_val = vec1[0]*vec2[1] - vec1[1]*vec2[0]
                 if cross_val < 0:
                     curvature = -curvature
@@ -298,11 +267,9 @@ def compute_local_curvature(centerline_x, centerline_z, window_size=5):
     return curvatures
 
 def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, ordered_yellow, max_width=10.0):
-    # functionality in name
     results = []
     pts = list(zip(resampled_clx, resampled_clz))
     N = len(pts)
-
     for i in range(N):
         if i == 0:
             dx = pts[i+1][0] - pts[i][0]
@@ -313,34 +280,30 @@ def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, order
         else:
             dx = pts[i+1][0] - pts[i-1][0]
             dz = pts[i+1][1] - pts[i-1][1]
-
         norm = math.hypot(dx, dz)
         if norm < 1e-9:
             T = (1.0, 0.0)
         else:
             T = (dx/norm, dz/norm)
-
-        left_normal  = (-T[1], T[0])
-        right_normal = ( T[1],-T[0])
-
+        left_normal = (-T[1], T[0])
+        right_normal = (T[1], -T[0])
         center = pts[i]
-        d_yellow = compute_ray_edge_intersection_distance(center, left_normal,  ordered_yellow, max_distance=max_width)
-        d_blue   = compute_ray_edge_intersection_distance(center, right_normal, ordered_blue,   max_distance=max_width)
+        d_yellow = compute_ray_edge_intersection_distance(center, left_normal, ordered_yellow, max_distance=max_width)
+        d_blue = compute_ray_edge_intersection_distance(center, right_normal, ordered_blue, max_distance=max_width)
         if d_yellow is None: d_yellow = max_width
-        if d_blue   is None: d_blue   = max_width
+        if d_blue is None: d_blue = max_width
         width = d_yellow + d_blue
         results.append({"center": center, "width": width})
     return results
 
 def compute_heading_difference(car_x, car_z, car_heading, centerline_x, centerline_z):
-    # functionality in name
     N = len(centerline_x)
     track_headings = np.zeros(N)
     for i in range(N):
         if i == 0:
             dx = centerline_x[1] - centerline_x[0]
             dz = centerline_z[1] - centerline_z[0]
-        elif i == N - 1:
+        elif i == N-1:
             dx = centerline_x[-1] - centerline_x[-2]
             dz = centerline_z[-1] - centerline_z[-2]
         else:
@@ -348,23 +311,18 @@ def compute_heading_difference(car_x, car_z, car_heading, centerline_x, centerli
             dz = centerline_z[i+1] - centerline_z[i-1]
         track_headings[i] = math.atan2(dz, dx)
     track_headings_unwrapped = np.unwrap(track_headings)
-
     dists = np.hypot(np.array(centerline_x) - car_x, np.array(centerline_z) - car_z)
     i_min = int(np.argmin(dists))
     track_heading_closest = track_headings_unwrapped[i_min]
-
     car_heading_normalized = (car_heading + math.pi) % (2*math.pi) - math.pi
     heading_diff = (car_heading_normalized - track_heading_closest + math.pi) % (2*math.pi) - math.pi
-
     if heading_diff > math.pi/2:
         heading_diff -= math.pi
     elif heading_diff < -math.pi/2:
         heading_diff += math.pi
-
     return heading_diff
 
 def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline_z):
-    # basically the same info as the perpendicular rays together with track width, could be omitted I think?
     pts = list(zip(centerline_x, centerline_z))
     best_distance = float('inf')
     best_signed_distance = 0.0
@@ -386,100 +344,124 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
         dist = math.hypot(car_x - proj[0], car_z - proj[1])
         if dist < best_distance:
             best_distance = dist
-            norm_v = math.sqrt(v_dot_v) if v_dot_v !=0 else 1e-9
+            norm_v = math.sqrt(v_dot_v) if v_dot_v != 0 else 1e-9
             tangent = (vx/norm_v, vz/norm_v)
             left_normal = (-tangent[1], tangent[0])
             diff_vec = (car_x - proj[0], car_z - proj[1])
             sign = 1 if (diff_vec[0]*left_normal[0] + diff_vec[1]*left_normal[1]) >= 0 else -1
-            best_signed_distance = sign*dist
+            best_signed_distance = sign * dist
     return best_signed_distance
 
+def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_points,
+                                              front_distance=20.0, behind_distance=5.0):
+    pts = np.array(centerline_points)  # shape (N,2)
+    cum_dist = np.array(compute_centerline_cumulative_distance(pts[:,0].tolist(),
+                                                               pts[:,1].tolist()))
+    N = len(pts)
+    dists = np.hypot(pts[:,0] - car_x, pts[:,1] - car_z)
+    i_proj = int(np.argmin(dists))
+    L_proj = cum_dist[i_proj]
+    L_front_target = L_proj + front_distance
+    L_behind_target = L_proj - behind_distance
+
+    def interpolate_point(target_L):
+        if target_L <= cum_dist[0]:
+            return pts[0]
+        if target_L >= cum_dist[-1]:
+            return pts[-1]
+        idx = np.searchsorted(cum_dist, target_L)
+        L1, L2 = cum_dist[idx-1], cum_dist[idx]
+        p1, p2 = pts[idx-1], pts[idx]
+        ratio = (target_L - L1) / (L2 - L1)
+        return p1 + ratio * (p2 - p1)
+    
+    global_front_pt = interpolate_point(L_front_target)
+    global_behind_pt = interpolate_point(L_behind_target)
+    
+    front_mask = (cum_dist >= L_proj) & (cum_dist <= L_front_target)
+    behind_mask = (cum_dist >= L_behind_target) & (cum_dist <= L_proj)
+    
+    global_front = pts[front_mask].tolist()
+    global_behind = pts[behind_mask].tolist()
+    
+    if len(global_front) == 0 or np.hypot(*(np.array(global_front[-1]) - global_front_pt)) > 1e-3:
+        global_front.append(global_front_pt.tolist())
+    if len(global_behind) == 0 or np.hypot(*(np.array(global_behind[0]) - global_behind_pt)) > 1e-3:
+        global_behind.insert(0, global_behind_pt.tolist())
+    
+    front_local = []
+    indices_front = np.where(front_mask)[0]
+    for idx in indices_front:
+        p = pts[idx]
+        arc_offset = cum_dist[idx] - L_proj
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        front_local.append((arc_offset, lateral, 0))
+    if len(global_front) > len(indices_front):
+        p = np.array(global_front_pt)
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        front_local.append((front_distance, lateral, 0))
+    
+    behind_local = []
+    indices_behind = np.where(behind_mask)[0]
+    for idx in indices_behind:
+        p = pts[idx]
+        arc_offset = cum_dist[idx] - L_proj
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        behind_local.append((arc_offset, lateral, 0))
+    if len(global_behind) > len(indices_behind):
+        p = np.array(global_behind_pt)
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        behind_local.insert(0, (-behind_distance, lateral, 0))
+    
+    return front_local, behind_local, global_front, global_behind
 
 def compute_acceleration(time, vx, vy):
-    """
-    Compute acceleration using backward differencing for array inputs.
-
-    Parameters:
-        time (array-like): Array of time stamps.
-        vx (array-like): Array of velocities in the x-direction.
-        vy (array-like): Array of velocities in the y-direction.
-
-    Returns:
-        tuple: Two numpy arrays (ax, ay) of the same length as the input arrays.
-        
-    The acceleration is computed as:
-        a_x[i] = (vx[i+1] - vx[i]) / (time[i+1] - time[i])
-    for i = 0 ... N-2, and the last acceleration is repeated.
-    """
-    # Convert inputs to numpy arrays
     time = np.asarray(time)
     vx = np.asarray(vx)
     vy = np.asarray(vy)
-    
-    # Compute differences
     dt = np.diff(time)
-    # Avoid division by nearly zero values
     dt[dt < 1e-9] = 1e-9
-    
     dvx = np.diff(vx)
     dvy = np.diff(vy)
-    
-    # Compute acceleration using backward differencing (length: N-1)
     ax = dvx / dt
     ay = dvy / dt
-
-    # Pad the last element to match the original length
     ax = np.concatenate([ax, [ax[-1]]])
     ay = np.concatenate([ay, [ay[-1]]])
-    
     return ax, ay
 
 def run_tcp_server(realtime_driver, host='127.0.0.1', port=65432):
-    """
-    Sets up a simple TCP server that:
-      1) Waits for a single Unity client to connect.
-      2) Repeatedly receives the car state as a comma-separated string:
-         "time,x_pos,z_pos,yaw_deg,long_vel,lat_vel,yaw_rate,steer_in,throttle_in,brake_in"
-      3) Uses `realtime_driver.process_single_step(...)` to compute predictions.
-      4) Sends the predicted steering, throttle, and brake values back to Unity.
-    
-    The `realtime_driver` argument must be an instance of your RealtimeDriver
-    (with a `process_single_step` method).
-    """
     print(f"Setting up server on {host}:{port}...")
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.bind((host, port))
     server_socket.listen(5)
     print("Server listening... Waiting for connection.")
-    
     client_socket, addr = server_socket.accept()
     print(f"Connection from {addr}")
-
     try:
         while True:
-            # Receive data (blocking call). Expect comma-separated values.
             raw_data = client_socket.recv(4096).decode('utf-8').strip()
             if not raw_data:
                 time.sleep(0.01)
-                continue  # No new data yet
-
-            # Example CSV format: 10 fields -> time, x, z, yaw_deg, vx, vy, yaw_rate, steer_in, throttle_in, brake_in
+                continue
             fields = raw_data.split(',')
             if len(fields) < 6:
                 print(raw_data)
-                # Not enough values, skip
                 continue
-            
-            # Parse incoming fields
-            sim_time   = time.time()
-            car_x      = float(fields[0])
-            car_z      = float(fields[1])
-            yaw_deg    = float(fields[2])
-            vx         = float(fields[3])
-            vy         = float(fields[4])
-            yaw_rate   = float(fields[5])
-
-            # Call the real-time driver for predictions
+            sim_time = time.time()
+            car_x = float(fields[0])
+            car_z = float(fields[1])
+            yaw_deg = float(fields[2])
+            vx = float(fields[3])
+            vy = float(fields[4])
+            yaw_rate = float(fields[5])
             st_pred, th_pred, br_pred = realtime_driver.process_single_step(
                 time=sim_time,
                 x_pos=car_x,
@@ -491,12 +473,9 @@ def run_tcp_server(realtime_driver, host='127.0.0.1', port=65432):
                 steering_in=0,
                 throttle_in=0,
                 brake_in=0)
-
-            # Send predictions back
             message = f"{st_pred},{th_pred},{br_pred}\n"
             print(f"Sending: {message.strip()}")
             client_socket.sendall(message.encode())
-
     except Exception as e:
         print(f"Error in server loop: {e}")
     finally:
@@ -509,66 +488,42 @@ def run_tcp_server(realtime_driver, host='127.0.0.1', port=65432):
 # ---------------------------------------------------------------------
 
 class FeatureTransformer:
-    """
-    Encapsulates StandardScaler + PCA. 
-    During training:
-       1) fit_transform -> learns standard scaling, then PCA
-    During inference:
-       1) transform -> uses the stored scalers to transform new data
-    """
-
     def __init__(self):
         self.scaler = None
-        self.pca    = None
+        self.pca = None
 
     def fit_transform(self, df, exclude_cols=None, pca_variance=0.99):
         if exclude_cols is None:
-            # Exclude steering, throttle, brake from the transform
             exclude_cols = ["steering", "throttle", "brake"]
-        
-        numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns 
-                        if c not in exclude_cols]
-
+        numeric_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c not in exclude_cols]
         self.numeric_cols = numeric_cols
         self.exclude_cols = exclude_cols
-
         self.scaler = StandardScaler()
         scaled_data = self.scaler.fit_transform(df[numeric_cols])
-
         self.pca = PCA(n_components=pca_variance)
         pca_data = self.pca.fit_transform(scaled_data)
-
         pc_columns = [f"PC{i+1}" for i in range(pca_data.shape[1])]
         df_pca = pd.DataFrame(pca_data, columns=pc_columns)
-
         df_excl = df[exclude_cols].reset_index(drop=True)
         df_out = pd.concat([df_pca, df_excl], axis=1)
         return df_out
 
     def transform(self, df):
-        if (self.scaler is None) or (self.pca is None):
+        if self.scaler is None or self.pca is None:
             raise RuntimeError("FeatureTransformer not fitted yet!")
-
         numeric_cols = self.numeric_cols
         exclude_cols = self.exclude_cols
-
-        # If some numeric_cols don't exist in df, you might need default=0
         for c in numeric_cols:
             if c not in df.columns:
                 df[c] = 0.0
-
         scaled_data = self.scaler.transform(df[numeric_cols])
-        pca_data    = self.pca.transform(scaled_data)
-
+        pca_data = self.pca.transform(scaled_data)
         pc_columns = [f"PC{i+1}" for i in range(pca_data.shape[1])]
         df_pca = pd.DataFrame(pca_data, columns=pc_columns)
-
-        # Keep the excluded columns if present
         df_excl = pd.DataFrame()
         for c in exclude_cols:
             if c in df.columns:
                 df_excl[c] = df[c].values
-
         df_excl = df_excl.reset_index(drop=True)
         df_out = pd.concat([df_pca, df_excl], axis=1)
         return df_out
@@ -576,33 +531,23 @@ class FeatureTransformer:
     def save(self, path="transformer.joblib"):
         joblib.dump({
             "scaler": self.scaler,
-            "pca":    self.pca,
+            "pca": self.pca,
             "numeric_cols": self.numeric_cols,
             "exclude_cols": self.exclude_cols
         }, path)
 
     def load(self, path="transformer.joblib"):
         data = joblib.load(path)
-        self.scaler      = data["scaler"]
-        self.pca         = data["pca"]
-        self.numeric_cols= data["numeric_cols"]
-        self.exclude_cols= data["exclude_cols"]
-
+        self.scaler = data["scaler"]
+        self.pca = data["pca"]
+        self.numeric_cols = data["numeric_cols"]
+        self.exclude_cols = data["exclude_cols"]
 
 # ---------------------------------------------------------------------
 # ------------------  NNDriver -------
 # ---------------------------------------------------------------------
 
 class NNDriver:
-    """
-    A class to encapsulate an MLPRegressor neural network.
-
-    By default:
-      - We assume the last three columns are the 'targets' (steering, throttle, brake).
-      - The rest are input features.
-    You can override by specifying custom input/output columns.
-    """
-
     def __init__(self,
                  hidden_layer_sizes=(64, 56, 48, 40, 32, 24, 16, 8),
                  alpha_value=0.01,
@@ -613,9 +558,6 @@ class NNDriver:
                  random_state=42,
                  verbose=True,
                  early_stopping=False):
-        """
-        Initialize the neural network model (MLPRegressor).
-        """
         self.model = MLPRegressor(
             hidden_layer_sizes=hidden_layer_sizes,
             activation='relu',
@@ -630,41 +572,27 @@ class NNDriver:
             verbose=verbose,
             early_stopping=early_stopping
         )
-        self.input_cols  = None
+        self.input_cols = None
         self.output_cols = None
 
     def train(self, df, input_cols=None, output_cols=None):
-        """
-        Train on the columns of df. If no columns are specified, 
-        use all except last 3 as inputs, and last 3 as outputs.
-        """
         if input_cols is None:
-            # Assume all columns except last three are inputs
             input_cols = df.columns[:-3]
         if output_cols is None:
-            # Assume last three columns are the targets
             output_cols = df.columns[-3:]
         self.input_cols = list(input_cols)
-        self.output_cols= list(output_cols)
-
+        self.output_cols = list(output_cols)
         X = df[self.input_cols].values
         y = df[self.output_cols].values
         self.model.fit(X, y)
 
     def predict(self, df):
-        """
-        df: DataFrame with the same input columns as used in training.
-        Returns predictions for each row.
-        """
-        if (self.input_cols is None):
+        if self.input_cols is None:
             raise RuntimeError("NNDriver not trained yet: input_cols is None.")
         X = df[self.input_cols].values
         return self.model.predict(X)
 
     def evaluate(self, df):
-        """
-        Evaluate MSE on a given df that includes both input & output columns.
-        """
         X = df[self.input_cols].values
         y = df[self.output_cols].values
         y_pred = self.model.predict(X)
@@ -672,110 +600,194 @@ class NNDriver:
         return mse_value
 
     def get_loss(self):
-        """
-        Return the final loss from MLPRegressor.
-        """
         return self.model.loss_
 
-# Modified SingleStepPostprocessor that uses global functions
-class SingleStepPostprocessor:
-    """
-    Computes features for a single time step using global functions.
-    """
-    def __init__(self, 
-                 resampled_centerline_x, 
-                 resampled_centerline_z,
-                 track_width_data,
-                 curvature_data,
-                 ordered_blue,
-                 ordered_yellow,
-                 shift_distance=1.5,
-                 max_ray_distance=20.0):
-        self.clx = resampled_centerline_x
-        self.clz = resampled_centerline_z
-        self.track_widths_all = track_width_data
-        self.curvatures_all   = curvature_data
-        self.ordered_blue     = ordered_blue
-        self.ordered_yellow   = ordered_yellow
-        self.shift_distance   = shift_distance
-        self.max_ray_distance = max_ray_distance
+# ---------------------------------------------------------------------
+# ------------------  NNDriverFramework (Centralized Realtime Mode) ---------------
+# ---------------------------------------------------------------------
 
-        # Precompute centerline points for quick distance computation.
-        self.centerline_pts   = list(zip(self.clx, self.clz))
-
-        # For computing acceleration (stateful)
+class NNDriverFramework:
+    def __init__(self, transformer_path="transformer.joblib", model_path="nn_model.joblib"):
+        self.transformer_path = transformer_path
+        self.model_path = model_path
+        self.transformer = FeatureTransformer()
+        self.nn_model = NNDriver()
+        # For acceleration state in realtime mode
         self.last_time = None
-        self.last_vx   = None
-        self.last_vy   = None
+        self.last_vx = None
+        self.last_vy = None
 
-    def compute_features_for_single_step(self, 
-                                         time, 
-                                         x_pos, 
-                                         z_pos, 
-                                         yaw_angle_deg, 
-                                         long_vel, 
-                                         lat_vel, 
-                                         yaw_rate, 
-                                         steering, 
-                                         throttle, 
-                                         brake):
-        """
-        Compute a feature vector for one time step by:
-          1) Shifting the car position (using the global helper)
-          2) Computing acceleration (stateful, using backward differencing on arrays)
-          3) Raycasting using the global function `raycast_for_state`
-          4) Finding the projection index (using the global helper)
-          5) Computing signed distance and heading difference (global functions)
-          6) Packaging everything into a DataFrame row.
-        """
-        # 1) Shift the car position using the global helper.
-        x_shifted, z_shifted = shift_position_single(x_pos, z_pos, yaw_angle_deg, self.shift_distance)
-        
-        # 2) Compute acceleration (stateful) using backward differencing.
-        # If no previous data is available, default acceleration to zero.
+    def postprocess_csv(self, data_dict, blue_cones, yellow_cones, clx, clz):
+        data_dict = shift_car_position(data_dict)
+        clx_rev = clx[::-1]
+        clz_rev = clz[::-1]
+        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
+        centerline_pts = list(zip(r_clx, r_clz))
+        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
+        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
+        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
+        rows = []
+        time_arr = data_dict["time"]
+        vx_arr = data_dict["long_vel"]
+        vy_arr = data_dict["lat_vel"]
+        ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
+        for i in range(len(time_arr)):
+            car_x = data_dict["x_pos"][i]
+            car_z = data_dict["z_pos"][i]
+            yaw_deg = data_dict["yaw_angle"][i]
+            yaw_rad = math.radians(yaw_deg)
+            yrd, brd = raycast_for_state(car_x, car_z, yaw_rad, ordered_blue, ordered_yellow, max_distance=20.0)
+            dc = compute_signed_distance_to_centerline(car_x, car_z, r_clx, r_clz)
+            dh = compute_heading_difference(car_x, car_z, yaw_rad, r_clx, r_clz)
+            dists = [math.hypot(px - car_x, pz - car_z) for px, pz in centerline_pts]
+            i_proj = int(np.argmin(dists))
+            tw0 = track_widths_all[i_proj]["width"] if i_proj < len(track_widths_all) else np.nan
+            c0 = curvatures_all[i_proj] if i_proj < len(curvatures_all) else np.nan
+
+            row_dict = {
+                "time": time_arr[i],
+                "x_pos": car_x,
+                "z_pos": car_z,
+                "yaw_deg": yaw_deg,
+                "long_vel": vx_arr[i],
+                "lat_vel": vy_arr[i],
+                "yaw_rate": data_dict["yaw_rate"][i],
+                "steering": data_dict["steering"][i],
+                "throttle": data_dict["throttle"][i],
+                "brake": data_dict["brake"][i],
+                "ax": ax_arr[i],
+                "ay": ay_arr[i],
+                "dist_center": -dc,
+                "head_diff": dh,
+                "track_width": tw0,
+                "curvature": c0,
+            }
+            for idx, dist_val in enumerate(yrd, start=1):
+                row_dict[f"yr{idx}"] = dist_val
+            for idx, dist_val in enumerate(brd, start=1):
+                row_dict[f"br{idx}"] = dist_val
+
+            # --- Compute local centerline features ---
+            front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
+                car_x, car_z, math.radians(yaw_deg), centerline_pts,
+                front_distance=20.0, behind_distance=5.0
+            )
+            if len(front_local) > 0:
+                fl = np.array(front_local)
+                x_front = fl[:,0]
+                z_front = fl[:,1]
+                target_x = np.arange(1,21)
+                target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
+            else:
+                target_x = np.arange(1,21)
+                target_z = np.full(20, float("nan"))
+            if len(behind_local) > 0:
+                bl = np.array(behind_local)
+                x_behind = bl[:,0]
+                z_behind = bl[:,1]
+                target_x_b = np.arange(-5,0)
+                target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
+            else:
+                target_x_b = np.arange(-5,0)
+                target_z_b = np.full(5, float("nan"))
+            for j, d in enumerate(target_x, start=1):
+                row_dict[f"rel_z{j}"] = target_z[j-1]
+                idx_front = i_proj + int(round(d))
+                if idx_front < len(r_clx):
+                    row_dict[f"c{j}"] = curvatures_all[idx_front]
+                    row_dict[f"tw{j}"] = track_widths_all[idx_front]["width"]
+                else:
+                    row_dict[f"c{j}"] = float("nan")
+                    row_dict[f"tw{j}"] = float("nan")
+            for j, d in enumerate(target_x_b, start=1):
+                row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
+                idx_behind = i_proj + int(round(d))
+                if 0 <= idx_behind < len(r_clx):
+                    row_dict[f"b_c{j}"] = curvatures_all[idx_behind]
+                    row_dict[f"b_tw{j}"] = track_widths_all[idx_behind]["width"]
+                else:
+                    row_dict[f"b_c{j}"] = float("nan")
+                    row_dict[f"b_tw{j}"] = float("nan")
+            row_dict["c0"] = c0
+            row_dict["tw0"] = tw0
+            # --- End new fields ---
+            rows.append(row_dict)
+        df_out = pd.DataFrame(rows)
+        return df_out
+
+    def process_realtime_frame(self, sensor_data, track_data):
+        # sensor_data: dictionary with keys: time, x_pos, z_pos, yaw_deg, long_vel, lat_vel, yaw_rate, steering, throttle, brake
+        t = sensor_data["time"]
+        car_x = sensor_data["x_pos"]
+        car_z = sensor_data["z_pos"]
+        yaw_deg = sensor_data["yaw_deg"]
+        long_vel = sensor_data["long_vel"]
+        lat_vel = sensor_data["lat_vel"]
+        yaw_rate = sensor_data["yaw_rate"]
+        steering = sensor_data["steering"]
+        throttle = sensor_data["throttle"]
+        brake = sensor_data["brake"]
+
+        # Shift car position
+        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=1.5)
+
+        # Compute acceleration using previous frame state
         if self.last_time is None or self.last_vx is None or self.last_vy is None:
             ax, ay = 0.0, 0.0
         else:
-            # Create arrays with two elements: previous and current values.
-            time_arr = np.array([self.last_time, time])
-            vx_arr   = np.array([self.last_vx, long_vel])
-            vy_arr   = np.array([self.last_vy, lat_vel])
-            # The compute_acceleration function (defined globally) returns arrays of length 1.
+            time_arr = np.array([self.last_time, t])
+            vx_arr = np.array([self.last_vx, long_vel])
+            vy_arr = np.array([self.last_vy, lat_vel])
             ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
             ax, ay = ax_arr[0], ay_arr[0]
-        
-        # Update state with current time and velocities.
-        self.last_time = time
-        self.last_vx   = long_vel
-        self.last_vy   = lat_vel
-        
-        # 3) Raycasting (global function expects yaw in radians)
-        yaw_rad = math.radians(yaw_angle_deg)
-        yr_dists, br_dists = raycast_for_state(
-            x_shifted, z_shifted, yaw_rad,
-            self.ordered_blue, self.ordered_yellow,
-            max_distance=self.max_ray_distance
-        )
-        
-        # 4) Find the closest centerline point using the global helper.
-        i_proj = find_projection_index(x_shifted, z_shifted, self.centerline_pts)
-        if 0 <= i_proj < len(self.track_widths_all):
-            tw0 = self.track_widths_all[i_proj]["width"]
-            c0  = self.curvatures_all[i_proj]
+        self.last_time = t
+        self.last_vx = long_vel
+        self.last_vy = lat_vel
+
+        yaw_rad = math.radians(yaw_deg)
+        yrd, brd = raycast_for_state(x_shifted, z_shifted, yaw_rad,
+                                      track_data["ordered_blue"], track_data["ordered_yellow"],
+                                      max_distance=20.0)
+        dc = compute_signed_distance_to_centerline(x_shifted, z_shifted, track_data["r_clx"], track_data["r_clz"])
+        dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad, track_data["r_clx"], track_data["r_clz"])
+        dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in track_data["centerline_pts"]]
+        i_proj = int(np.argmin(dists))
+        if i_proj < len(track_data["r_clx"]):
+            c0 = track_data["curvatures_all"][i_proj]
+            tw0 = track_data["track_widths_all"][i_proj]["width"]
         else:
-            tw0 = float('nan')
-            c0  = float('nan')
-        
-        # 5) Compute signed distance and heading difference using global functions.
-        dc = compute_signed_distance_to_centerline(x_shifted, z_shifted, self.clx, self.clz)
-        dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad, self.clx, self.clz)
-        
-        # 6) Package into a dict (and then a DataFrame row)
+            c0 = float("nan")
+            tw0 = float("nan")
+
+        # Compute local centerline features
+        front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
+            car_x, car_z, yaw_rad, track_data["centerline_pts"],
+            front_distance=20.0, behind_distance=5.0
+        )
+        if len(front_local) > 0:
+            fl = np.array(front_local)
+            x_front = fl[:,0]
+            z_front = fl[:,1]
+            target_x = np.arange(1,21)
+            target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
+        else:
+            target_x = np.arange(1,21)
+            target_z = np.full(20, float("nan"))
+        if len(behind_local) > 0:
+            bl = np.array(behind_local)
+            x_behind = bl[:,0]
+            z_behind = bl[:,1]
+            target_x_b = np.arange(-5,0)
+            target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
+        else:
+            target_x_b = np.arange(-5,0)
+            target_z_b = np.full(5, float("nan"))
+
         row_dict = {
-            "time": time,
+            "time": t,
             "x_pos": x_shifted,
             "z_pos": z_shifted,
-            "yaw_deg": yaw_angle_deg,
+            "yaw_deg": yaw_deg,
             "long_vel": long_vel,
             "lat_vel": lat_vel,
             "yaw_rate": yaw_rate,
@@ -784,345 +796,178 @@ class SingleStepPostprocessor:
             "brake": brake,
             "ax": ax,
             "ay": ay,
-            "dist_center": -dc,  # Adjust sign as desired.
+            "dist_center": -dc,
             "head_diff": dh,
             "track_width": tw0,
             "curvature": c0,
         }
-        for idx, dist_val in enumerate(yr_dists, start=1):
+        for idx, dist_val in enumerate(yrd, start=1):
             row_dict[f"yr{idx}"] = dist_val
-        for idx, dist_val in enumerate(br_dists, start=1):
+        for idx, dist_val in enumerate(brd, start=1):
             row_dict[f"br{idx}"] = dist_val
-
-        df_single = pd.DataFrame([row_dict])
-        return df_single
-    
-# ---------------------------------------------------------------------
-# ------------------ MAIN ORCHESTRATOR CLASS --------------------------
-# ---------------------------------------------------------------------
-
-class NNDriverFramework:
-    """
-    High-level class that orchestrates:
-      - Reading CSV & track JSON
-      - Postprocessing to generate features
-      - Fitting/applying StandardScaler + PCA
-      - Training or real-time inference with an MLPRegressor-based NNDriver
-    """
-
-    def __init__(self, transformer_path="transformer.joblib", model_path="nn_model.joblib"):
-        self.transformer_path = transformer_path
-        self.model_path       = model_path
-
-        # The Scaler + PCA pipeline
-        self.transformer      = FeatureTransformer()
-
-        # The MLPRegressor-based driver
-        self.nn_model         = NNDriver()
-
-    def postprocess_csv(self, data_dict, blue_cones, yellow_cones, clx, clz):
-        """
-        Emulates postprocessing for each CSV row -> returns DataFrame with relevant features.
-        """
-        # SHIFT if needed
-        data_dict = shift_car_position(data_dict)
-
-        # Reverse centerline
-        clx_rev = clx[::-1]
-        clz_rev = clz[::-1]
-
-        # Resample
-        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
-        centerline_pts = list(zip(r_clx, r_clz))
-
-        # Edges
-        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
-
-        # Precompute curvature + track width
-        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
-        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
-
-        # Build output row by row
-        rows = []
-        time_arr = data_dict["time"]
-        vx_arr   = data_dict["long_vel"]
-        vy_arr   = data_dict["lat_vel"]
-        ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
-
-        for i in range(len(time_arr)):
-            car_x   = data_dict["x_pos"][i]
-            car_z   = data_dict["z_pos"][i]
-            yaw_deg = data_dict["yaw_angle"][i]
-            yaw_rad = math.radians(yaw_deg)
-
-            # Raycasting
-            yrd, brd = raycast_for_state(car_x, car_z, yaw_rad, ordered_blue, ordered_yellow, max_distance=20.0)
-
-            # Dist to centerline
-            dc = compute_signed_distance_to_centerline(car_x, car_z, r_clx, r_clz)
-            # Heading difference
-            dh = compute_heading_difference(car_x, car_z, yaw_rad, r_clx, r_clz)
-
-            # Track width + curvature for the projection
-            dists = [math.hypot(px - car_x, pz - car_z) for px,pz in centerline_pts]
-            i_proj = int(np.argmin(dists))
-            tw0 = track_widths_all[i_proj]["width"] if i_proj < len(track_widths_all) else np.nan
-            c0  = curvatures_all[i_proj] if i_proj < len(curvatures_all) else np.nan
-
-            row_dict = {
-                "time":      time_arr[i],
-                "x_pos":     car_x,
-                "z_pos":     car_z,
-                "yaw_deg":   yaw_deg,
-                "long_vel":  vx_arr[i],
-                "lat_vel":   vy_arr[i],
-                "yaw_rate":  data_dict["yaw_rate"][i],
-                "steering":  data_dict["steering"][i],
-                "throttle":  data_dict["throttle"][i],
-                "brake":     data_dict["brake"][i],
-                "ax":        ax_arr[i],
-                "ay":        ay_arr[i],
-                "dist_center": -dc,  # or dc, depending on sign preference
-                "head_diff": dh,
-                "track_width": tw0,
-                "curvature":   c0,
-            }
-            # Add ray distances
-            for idx, dist_val in enumerate(yrd, start=1):
-                row_dict[f"yr{idx}"] = dist_val
-            for idx, dist_val in enumerate(brd, start=1):
-                row_dict[f"br{idx}"] = dist_val
-
-            rows.append(row_dict)
-
-        df_out = pd.DataFrame(rows)
-        return df_out
+        for j, d in enumerate(target_x, start=1):
+            row_dict[f"rel_z{j}"] = target_z[j-1]
+            idx_front = i_proj + int(round(d))
+            if idx_front < len(track_data["r_clx"]):
+                row_dict[f"c{j}"] = track_data["curvatures_all"][idx_front]
+                row_dict[f"tw{j}"] = track_data["track_widths_all"][idx_front]["width"]
+            else:
+                row_dict[f"c{j}"] = float("nan")
+                row_dict[f"tw{j}"] = float("nan")
+        for j, d in enumerate(target_x_b, start=1):
+            row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
+            idx_behind = i_proj + int(round(d))
+            if 0 <= idx_behind < len(track_data["r_clx"]):
+                row_dict[f"b_c{j}"] = track_data["curvatures_all"][idx_behind]
+                row_dict[f"b_tw{j}"] = track_data["track_widths_all"][idx_behind]["width"]
+            else:
+                row_dict[f"b_c{j}"] = float("nan")
+                row_dict[f"b_tw{j}"] = float("nan")
+        row_dict["c0"] = c0
+        row_dict["tw0"] = tw0
+        return row_dict
 
     def train_mode(self, csv_path, json_path, output_csv_path=None, pca_variance=0.99, test_split=0.2):
-        """
-        Reads CSV & JSON, builds a DataFrame with features,
-        then fits StandardScaler + PCA, and trains the MLPRegressor.
-        Saves the fitted pipeline and the model.
-        """
         print("[NNDriverFramework] Training mode...")
-
-        # 1) Read raw data
         data_dict = read_csv_data(csv_path)
         if data_dict is None:
             print("Could not load CSV data.")
             return
-
-        # 2) Parse track
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-
-        # 3) Postprocess -> features
         df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
         if output_csv_path:
             df_features.to_csv(output_csv_path, index=False)
             print(f"[NNDriverFramework] Postprocessed CSV saved: {output_csv_path}")
-
-        # 4) Fit StandardScaler + PCA
-        df_trans = self.transformer.fit_transform(df_features, 
-                                                  exclude_cols=["steering","throttle","brake"],
-                                                  pca_variance=pca_variance)
-
+        df_trans = self.transformer.fit_transform(df_features, exclude_cols=["steering", "throttle", "brake"], pca_variance=pca_variance)
         self.transformer.save(self.transformer_path)
         print(f"[NNDriverFramework] Transformer saved to {self.transformer_path}")
-
-        # 5) We want the last 3 columns to be the outputs: (steering, throttle, brake)
-        #    The DF from transformer is: [PC1..PCn, steering, throttle, brake]
-        #    Train the NN on that.
-
-        # Input columns = all columns that start with "PC"
         pc_cols = [c for c in df_trans.columns if c.startswith("PC")]
-        # Output columns = "steering","throttle","brake"
-        out_cols = ["steering","throttle","brake"]
-
-        # Make sure out_cols actually exist in df_trans
+        out_cols = ["steering", "throttle", "brake"]
         X = df_trans[pc_cols].values
         y = df_trans[out_cols].values
-
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_split, random_state=42)
-
-        # Put them in a small df for the training method:
         train_df = pd.DataFrame(X_train, columns=pc_cols)
-        train_df["steering"] = y_train[:,0]
-        train_df["throttle"] = y_train[:,1]
-        train_df["brake"]    = y_train[:,2]
-
+        train_df["steering"] = y_train[:, 0]
+        train_df["throttle"] = y_train[:, 1]
+        train_df["brake"] = y_train[:, 2]
         test_df = pd.DataFrame(X_test, columns=pc_cols)
-        test_df["steering"] = y_test[:,0]
-        test_df["throttle"] = y_test[:,1]
-        test_df["brake"]    = y_test[:,2]
-
-        # 6) Train the NNDriver
+        test_df["steering"] = y_test[:, 0]
+        test_df["throttle"] = y_test[:, 1]
+        test_df["brake"] = y_test[:, 2]
         self.nn_model.train(train_df)
-
-        # Evaluate on test set
         mse_value = self.nn_model.evaluate(test_df)
         print("[NNDriverFramework] Test MSE:", mse_value)
         print("[NNDriverFramework] Final Loss:", self.nn_model.get_loss())
-
-        # 7) Save the NN model (via joblib or pickle):
         joblib.dump(self.nn_model, self.model_path)
         print(f"[NNDriverFramework] NN model saved to {self.model_path}")
 
     def inference_mode(self, csv_path, json_path):
-        """
-        Inference mode:
-           1) Load the pre-fitted StandardScaler & PCA
-           2) Load the trained NNDriver
-           3) Postprocess new CSV data, transform, predict
-        """
         print("[NNDriverFramework] Inference mode...")
-
-        # Load pipeline
         self.transformer.load(self.transformer_path)
-        self.nn_model = joblib.load(self.model_path)  # we get the entire NNDriver object
-
+        self.nn_model = joblib.load(self.model_path)
         data_dict = read_csv_data(csv_path)
         if data_dict is None:
             print("Could not load CSV data.")
             return
-
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-
         df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
-
-        # Transform the features
         df_trans = self.transformer.transform(df_features)
-
-        # Predict
-        predictions = self.nn_model.predict(df_trans)  # shape (N,3)
-        
-        # For demonstration, print them out
+        predictions = self.nn_model.predict(df_trans)
         times = df_features["time"].values
         for i in range(len(df_features)):
             st, th, br = predictions[i]
             t = times[i]
             print(f"[Inference] t={t:.2f}s => steering={st:.3f}, throttle={th:.3f}, brake={br:.3f}")
-
         print("[NNDriverFramework] Inference complete.")
 
-
-# The RealtimeDriver class remains mostly unchanged, as it instantiates the SingleStepPostprocessor.
-class RealtimeDriver:
-    def __init__(self, 
-                 transformer_path="transformer.joblib", 
-                 model_path="nn_model.joblib", 
-                 track_json="default.json", 
-                 shift_distance=1.5, 
-                 max_ray_distance=20.0):
+    def realtime_mode(self, track_json, host='127.0.0.1', port=65432):
         """
-        Loads the fitted transformer, NN model, and track geometry.
-        Initializes the SingleStepPostprocessor (which now uses global functions).
+        Realtime mode: loads the transformer and NN model, reads track geometry,
+        computes the resampled centerline (with curvature and track width), and then
+        sets up a TCP server to process incoming sensor data. Each sensor reading is
+        processed to compute the full feature vector (including local centerline features)
+        before being transformed and fed to the NN for predictions.
         """
-        # 1) Load the pre-fitted StandardScaler+PCA.
-        self.transformer = FeatureTransformer()
-        self.transformer.load(transformer_path)
-        print(f"[RealtimeDriver] Loaded transformer from {transformer_path}")
-
-        # 2) Load the trained NN model.
-        self.nn_model = joblib.load(model_path)  # This is an instance of NNDriver.
-        print(f"[RealtimeDriver] Loaded NN model from {model_path}")
-
-        # 3) Parse track geometry.
-        from pathlib import Path
-        track_json = Path(track_json)
+        self.transformer.load(self.transformer_path)
+        self.nn_model = joblib.load(self.model_path)
+        # Parse track JSON and compute track-related data.
         with open(track_json, 'r') as f:
             data = json.load(f)
         x_values = data.get("x", [])
         y_values = data.get("y", [])
-        colors   = data.get("color", [])
-        clx      = data.get("centerline_x", [])
-        clz      = data.get("centerline_y", [])
-        
-        # Build cones.
+        colors = data.get("color", [])
+        clx = data.get("centerline_x", [])
+        clz = data.get("centerline_y", [])
         blue_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "blue"]
         yellow_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "yellow"]
-
-        # Reverse centerline to match offline processing.
         clx_rev = clx[::-1]
         clz_rev = clz[::-1]
-
-        # Resample the centerline.
         r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
-
-        # Create track edges.
+        centerline_pts = list(zip(r_clx, r_clz))
         ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
-        
-        # Compute curvature and track width.
-        curvature_data   = compute_local_curvature(r_clx, r_clz, window_size=5)
-        track_width_data = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
-
-        # 4) Initialize the SingleStepPostprocessor (which now uses the global functions).
-        self.single_step_processor = SingleStepPostprocessor(
-            resampled_centerline_x=r_clx,
-            resampled_centerline_z=r_clz,
-            track_width_data=track_width_data,
-            curvature_data=curvature_data,
-            ordered_blue=ordered_blue,
-            ordered_yellow=ordered_yellow,
-            shift_distance=shift_distance,
-            max_ray_distance=max_ray_distance
-        )
-        print("[RealtimeDriver] Initialized SingleStepPostprocessor.")
-
-    def process_single_step(self, 
-                            time, 
-                            x_pos, 
-                            z_pos, 
-                            yaw_angle_deg, 
-                            long_vel, 
-                            lat_vel, 
-                            yaw_rate, 
-                            steering_in, 
-                            throttle_in, 
-                            brake_in):
-        """
-        Processes a single time step:
-          1) Computes features using SingleStepPostprocessor.
-          2) Transforms the features using the pre-fitted transformer.
-          3) Predicts control commands with the NN model.
-        Returns:
-          (predicted_steering, predicted_throttle, predicted_brake)
-        """
-        # Compute the feature row.
-        df_single = self.single_step_processor.compute_features_for_single_step(
-            time=time,
-            x_pos=x_pos,
-            z_pos=z_pos,
-            yaw_angle_deg=yaw_angle_deg,
-            long_vel=long_vel,
-            lat_vel=lat_vel,
-            yaw_rate=yaw_rate,
-            steering=steering_in,
-            throttle=throttle_in,
-            brake=brake_in
-        )
-        # Apply the same StandardScaler + PCA transformation.
-        df_trans = self.transformer.transform(df_single)
-        # Predict using the NN model.
-        predictions = self.nn_model.predict(df_trans)  # Expected shape: (1,3)
-        st_pred, th_pred, br_pred = predictions[0]
-        return (st_pred, th_pred, br_pred)
-
-# ---------------------------------------------------------------------
-# ------------------ MAIN CLI SCRIPT ----------------------------------
-# ---------------------------------------------------------------------
+        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
+        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
+        # Pack track data for realtime processing.
+        track_data = {
+            "r_clx": r_clx,
+            "r_clz": r_clz,
+            "centerline_pts": centerline_pts,
+            "ordered_blue": ordered_blue,
+            "ordered_yellow": ordered_yellow,
+            "curvatures_all": curvatures_all,
+            "track_widths_all": track_widths_all
+        }
+        print(f"[Realtime] Setting up server on {host}:{port}...")
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((host, port))
+        server_socket.listen(5)
+        print("[Realtime] Server listening... Waiting for connection.")
+        client_socket, addr = server_socket.accept()
+        print(f"[Realtime] Connection from {addr}")
+        try:
+            while True:
+                raw_data = client_socket.recv(4096).decode('utf-8').strip()
+                if not raw_data:
+                    time.sleep(0.01)
+                    continue
+                fields = raw_data.split(',')
+                if len(fields) < 6:
+                    print(raw_data)
+                    continue
+                sensor_data = {}
+                sensor_data["time"] = time.time()
+                sensor_data["x_pos"] = float(fields[0])
+                sensor_data["z_pos"] = float(fields[1])
+                sensor_data["yaw_deg"] = float(fields[2])
+                sensor_data["long_vel"] = float(fields[3])
+                sensor_data["lat_vel"] = float(fields[4])
+                sensor_data["yaw_rate"] = float(fields[5])
+                sensor_data["steering"] = 0.0
+                sensor_data["throttle"] = 0.0
+                sensor_data["brake"] = 0.0
+                row_dict = self.process_realtime_frame(sensor_data, track_data)
+                df_single = pd.DataFrame([row_dict])
+                df_trans = self.transformer.transform(df_single)
+                predictions = self.nn_model.predict(df_trans)
+                st_pred, th_pred, br_pred = predictions[0]
+                message = f"{st_pred},{th_pred},{br_pred}\n"
+                print(f"[Realtime] Sending: {message.strip()}")
+                client_socket.sendall(message.encode())
+        except Exception as e:
+            print(f"[Realtime] Error: {e}")
+        finally:
+            client_socket.close()
+            server_socket.close()
+            print("[Realtime] Server closed.")
 
 def main():
-    
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="train", help="train, infer, or realtime")
-    parser.add_argument("--csv",  type=str, help="Path to CSV file (for train or infer)")
+    parser.add_argument("--csv", type=str, help="Path to CSV file (for train or infer)")
     parser.add_argument("--json", type=str, default="default.json", help="Path to track JSON")
-    parser.add_argument("--transformer", type=str, default="transformer.joblib",
-                        help="Path to save/load the fitted scaler/PCA")
-    parser.add_argument("--model", type=str, default="nn_model.joblib",
-                        help="Path to save/load the trained model")
-    parser.add_argument("--output_csv", type=str, default=None,
-                        help="Optional path to save postprocessed CSV in train mode")
+    parser.add_argument("--transformer", type=str, default="transformer.joblib", help="Path to save/load the fitted scaler/PCA")
+    parser.add_argument("--model", type=str, default="nn_model.joblib", help="Path to save/load the trained model")
+    parser.add_argument("--output_csv", type=str, default=None, help="Optional path to save postprocessed CSV in train mode")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="TCP server host")
     parser.add_argument("--port", type=int, default=65432, help="TCP server port")
     args = parser.parse_args()
@@ -1140,17 +985,10 @@ def main():
         framework = NNDriverFramework(transformer_path=args.transformer, model_path=args.model)
         framework.inference_mode(args.csv, args.json)
     elif args.mode.lower() == "realtime":
-        # Create RealtimeDriver
-        rt_driver = RealtimeDriver(
-            transformer_path=args.transformer,
-            model_path=args.model,
-            track_json=args.json
-        )
-        # Start the TCP server
-        run_tcp_server(rt_driver, host=args.host, port=args.port)
+        framework = NNDriverFramework(transformer_path=args.transformer, model_path=args.model)
+        framework.realtime_mode(args.json, host=args.host, port=args.port)
     else:
         print("Unknown mode. Use --mode train, infer, or realtime.")
-
 
 if __name__ == "__main__":
     main()
