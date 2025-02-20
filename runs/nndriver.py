@@ -1155,8 +1155,7 @@ class NNDriverFramework:
 
             # 4) Force a draw and short pause so it updates in real time
             plt.draw()
-            plt.pause(0.05)
-
+            plt.pause(0.001)
         print("[NNDriverFramework] Finished frame-by-frame realtime visualization.")
 
         # ---------------------------------------------------------------------
@@ -1208,7 +1207,6 @@ def main():
         # The framework itself handles the postprocessing & animation
         framework.visual_mode(csv_path=args.csv, json_path=args.json)
     elif mode == "visualize-realtime":
-        # NEW MODE: step-by-step "realtime" approach, from CSV
         if not args.csv:
             print("Must provide --csv for 'visualize-realtime'.")
             return
