@@ -1088,57 +1088,12 @@ class NNDriverFramework:
             plt.pause(0.001)
         print("[NNDriverFramework] Finished frame-by-frame realtime visualization.")
 
-    def visualize_absolute_mode(self, csv_path, json_path):
-        """
-        Visualize absolute positions: Plot the car trajectory (from CSV) and the cones/centerline (from JSON)
-        in their absolute coordinate space.
-        """
-        # Read car data from CSV
-        data = read_csv_data(csv_path)
-        if data is None:
-            print("Could not load CSV data.")
-            return
-        # Extract absolute car positions
-        car_x = data["x_pos"]
-        car_z = data["z_pos"]
-        yaw_deg = data["yaw_angle"]
-
-        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=2.5)
-
-        # Read cone and centerline data from JSON
-        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-
-        # Create figure
-        fig, ax = plt.subplots(figsize=(10, 8))
-        # Plot car trajectory
-        ax.plot(x_shifted, z_shifted, 'k-', label="Car Trajectory")
-        # Mark start and end
-        ax.scatter(x_shifted[0], z_shifted[0], c='red', marker='o', s=100, label="Start")
-        ax.scatter(x_shifted[-1], z_shifted[-1], c='green', marker='o', s=100, label="End")
-
-        # Plot cones if available
-        if blue_cones:
-            bx, bz = zip(*blue_cones)
-            ax.scatter(bx, bz, c='blue', marker='o', label="Blue Cones")
-        if yellow_cones:
-            yx, yz = zip(*yellow_cones)
-            ax.scatter(yx, yz, c='gold', marker='o', label="Yellow Cones")
-        # Optionally, plot the track centerline if provided
-        if clx and clz:
-            ax.plot(clx, clz, 'm--', label="Centerline")
-
-        ax.set_xlabel("X Position (m)")
-        ax.set_ylabel("Z Position (m)")
-        ax.set_title("Absolute Positions: Car Trajectory & Cones")
-        ax.legend()
-        plt.show()
-
     def visualize_realtime_absolute_mode(self, csv_path, json_path, heading_length=3.0):
         """
         Visualize in absolute coordinates with realtime animation:
-          - Plot the cones and track edges (from JSON)
-          - Animate the car driving through the scene (using shifted positions)
-          - Overlay the cast rays (transformed from the relative frame to absolute)
+          - Top panel: Plot cones, track edges, and centerline (from JSON) and animate the car (shifted position)
+            with cast rays (transformed to absolute coordinates).
+          - Bottom panel: Plot the local metrics (local centerline points, track width & curvature) as in the relative plot.
         """
         # --- Build track data from JSON ---
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
@@ -1165,46 +1120,67 @@ class NNDriverFramework:
             print("Could not load CSV data.")
             return
 
-        # --- Prepare background plot: cones, track edges, centerline ---
-        fig, ax = plt.subplots(figsize=(12,10))
-        # Plot cones
+        # --- Create a two-panel figure: top for absolute view, bottom for relative metrics ---
+        fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(12,10), gridspec_kw={'height_ratios':[3,1]})
+        fig.subplots_adjust(right=0.7)
+        
+        # Top panel: Plot background (cones, track edges, centerline)
         if blue_cones:
             bx, bz = zip(*blue_cones)
-            ax.scatter(bx, bz, c='blue', marker='o', label="Blue Cones")
+            ax_top.scatter(bx, bz, c='blue', marker='o', label="Blue Cones")
         if yellow_cones:
             yx, yz = zip(*yellow_cones)
-            ax.scatter(yx, yz, c='gold', marker='o', label="Yellow Cones")
-        # Plot track edges
+            ax_top.scatter(yx, yz, c='gold', marker='o', label="Yellow Cones")
         if ordered_blue:
             blue_x, blue_z = zip(*ordered_blue)
-            ax.plot(blue_x, blue_z, 'b-', label="Blue Track Edge")
+            ax_top.plot(blue_x, blue_z, 'b-', label="Blue Edge")
         if ordered_yellow:
             yellow_x, yellow_z = zip(*ordered_yellow)
-            ax.plot(yellow_x, yellow_z, 'y-', label="Yellow Track Edge")
-        # Optionally, plot the centerline
+            ax_top.plot(yellow_x, yellow_z, 'y-', label="Yellow Edge")
         if clx and clz:
-            ax.plot(clx, clz, 'm--', label="Centerline")
-        ax.set_xlabel("X Position (m)")
-        ax.set_ylabel("Z Position (m)")
-        ax.set_title("Realtime Absolute Visualization")
-        ax.legend()
+            ax_top.plot(clx, clz, 'm--', label="Centerline")
+        ax_top.set_xlabel("X (m)")
+        ax_top.set_ylabel("Z (m)")
+        ax_top.set_title("Absolute Scene with Cast Rays")
+        ax_top.legend()
 
-        # --- Prepare markers for the car, heading, and rays ---
-        car_marker, = ax.plot([], [], 'ro', markersize=10, label="Car")
-        heading_line, = ax.plot([], [], 'r-', lw=2, label="Heading")
-        # We'll create a list of line objects for the rays.
-        # Assume the relative ray angles are fixed:
+        # Prepare markers for the car and its heading in top panel.
+        car_marker, = ax_top.plot([], [], 'ro', markersize=10, label="Car")
+        heading_line, = ax_top.plot([], [], 'r-', lw=2, label="Heading")
+        # Create line objects for the rays.
         yellow_angles = np.deg2rad(np.arange(-20, 111, 10))
         blue_angles = np.deg2rad(np.arange(20, -111, -10))
-        yellow_ray_lines = [ax.plot([], [], color='yellow', linestyle='--', lw=1)[0] for _ in range(len(yellow_angles))]
-        blue_ray_lines = [ax.plot([], [], color='cyan', linestyle='--', lw=1)[0] for _ in range(len(blue_angles))]
+        yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0] for _ in range(len(yellow_angles))]
+        blue_ray_lines = [ax_top.plot([], [], color='cyan', linestyle='--', lw=1)[0] for _ in range(len(blue_angles))]
+        
+        # Bottom panel: Set up for relative metrics (local centerline, track width & curvature)
+        ax_bottom.set_title("Local Metrics: Centerline, Track Width & Curvature")
+        ax_bottom.set_xlabel("Local X (m)")
+        ax_bottom.set_ylabel("Track Width (m)")
+        ax_bottom.set_xlim(-5, 21)
+        ax_bottom.set_ylim(0, 10)
+        # We'll update these plots in the loop.
 
+                # Create persistent line objects for front centerline and track width
+        front_centerline_line, = ax_bottom.plot([], [], 'm.-', label="Front Centerline")
+        f_track_line, = ax_bottom.plot([], [], 'bo-', label="Fwd Track Width")
+        back_centerline_line, = ax_bottom.plot([], [], 'g.-', label="Back Centerline")
+        b_track_line, = ax_bottom.plot([], [], 'go-', label="Back Track Width")
+        ax_bottom.legend(loc='upper left')
+
+# Create twin axis for curvature metrics
+        ax_curv_bottom = ax_bottom.twinx()
+        ax_curv_bottom.set_ylim(-0.5, 0.5)
+        f_curv_line, = ax_curv_bottom.plot([], [], 'r.-', label="Fwd Curvature")
+        b_curv_line, = ax_curv_bottom.plot([], [], 'm.-', label="Back Curvature")
+        ax_curv_bottom.legend(loc='upper right')
+        
         # --- Reset realtime state ---
         self.last_time = None
         self.last_vx = None
         self.last_vy = None
 
-        # --- Iterate through each row in the CSV and animate ---
+        # --- Iterate through CSV rows to animate ---
         t_arr = data["time"]
         x_arr = data["x_pos"]
         z_arr = data["z_pos"]
@@ -1229,32 +1205,27 @@ class NNDriverFramework:
                 "throttle": th_arr[i],
                 "brake": br_arr[i],
             }
-            # Process the current frame (this applies the usual shift)
+            # Process the frame (this applies the usual shift)
             frame = self.process_realtime_frame(sensor_data, track_data)
-            # Get the shifted absolute position and heading from the frame
+            
+            # --- Top Panel Update: Absolute view ---
             car_x = frame["x_pos"]
             car_z = frame["z_pos"]
             heading_deg = frame["yaw_deg"]
             heading_rad = math.radians(heading_deg)
-            
-            # Update car marker and heading line
             car_marker.set_data([car_x], [car_z])
             hx = car_x + heading_length * math.cos(heading_rad)
             hz = car_z + heading_length * math.sin(heading_rad)
             heading_line.set_data([car_x, hx], [car_z, hz])
-            
-            # --- Update rays: transform relative ray endpoints to absolute coordinates ---
-            # For yellow rays
+            # Update cast rays (yellow)
             for idx, angle in enumerate(yellow_angles, start=1):
                 ray_dist = frame.get(f"yr{idx}", 0)
-                # In the relative (local) frame, the endpoint is:
                 local_x = ray_dist * math.cos(angle)
                 local_y = ray_dist * math.sin(angle)
-                # Transform to absolute: rotate by heading, then translate by (car_x, car_z)
                 abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
                 abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
                 yellow_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
-            # For blue rays
+            # Update cast rays (blue)
             for idx, angle in enumerate(blue_angles, start=1):
                 ray_dist = frame.get(f"br{idx}", 0)
                 local_x = ray_dist * math.cos(angle)
@@ -1262,10 +1233,28 @@ class NNDriverFramework:
                 abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
                 abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
                 blue_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
-            # -----------------------------------------------------------------
+            
+            # --- Bottom Panel Update: Relative metrics ---
+            # Clear the bottom panel for each frame
+            # Compute forward relative metrics
+            front_local_vals = [frame.get(f"rel_z{j}", 0.0) for j in range(1, 21)]
+            f_tw = [frame.get(f"tw{j}", 0.0) for j in range(21)]
+            f_curv = [frame.get(f"c{j}", 0.0) for j in range(21)]
 
-            plt.draw()
+# Compute behind relative metrics
+            back_local_vals = [frame.get(f"b_rel_z{j}", 0.0) for j in range(1, 6)]
+            b_tw = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
+            b_curv = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
+
+# Update the persistent line objects:
+            f_track_line.set_data(np.arange(21), f_tw)
+            f_curv_line.set_data(np.arange(21), f_curv)
+
+            b_track_line.set_data(np.array(list(range(-5,0))), b_tw)
+            b_curv_line.set_data(np.array(list(range(-5,0))), b_curv)
+            
             plt.pause(0.01)
+            plt.draw()
         print("[NNDriverFramework] Finished realtime absolute visualization.")
         plt.show()
         # ---------------------------------------------------------------------
