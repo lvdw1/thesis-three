@@ -6,19 +6,8 @@ Unified codebase for:
   - Reading and post-processing data
   - Applying StandardScaler + PCA
   - Training and/or running inference with an MLPRegressor-based NN.
-
-Usage:
-  python nndriver.py --mode train --csv session3/run1.csv --json ../../../sim/tracks/default.json
-     (Trains the pipeline on the CSV data, fits StandardScaler & PCA, saves them,
-      and trains a model.)
-
-  python nndriver.py --mode infer --csv new_data.csv --json ../../../sim/tracks/default.json
-     (Loads the pre-fitted StandardScaler & PCA, processes each timestep,
-      applies the NN for real-time/inference.)
-
-  python nndriver.py --mode realtime --json ../../../sim/tracks/default.json --host 127.0.0.1 --port 65432
-     (Runs the NN in realtime mode via a TCP server; each sensor reading is postprocessed
-      (including computing local centerline features) before being fed to the NN.)
+  - Realtime driving via TCP socket.
+  - Visualizing postprocessed data (to confirm the NN’s inputs look correct).
 """
 
 import os
@@ -32,6 +21,8 @@ import pandas as pd
 import joblib
 import socket
 import time
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
@@ -92,6 +83,7 @@ def order_cones_by_centerline(cones, centerline_x, centerline_z):
 def create_track_edges(blue_cones, yellow_cones, centerline_x, centerline_z):
     ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
     ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
+    # close loops if not already
     if ordered_blue and (np.hypot(ordered_blue[0][0] - ordered_blue[-1][0],
                                   ordered_blue[0][1] - ordered_blue[-1][1]) > 1e-6):
         ordered_blue.append(ordered_blue[0])
@@ -257,6 +249,7 @@ def compute_local_curvature(centerline_x, centerline_z, window_size=5):
         else:
             R = math.sqrt(R_sq)
             curvature = 1.0 / R
+            # sign the curvature based on cross product
             if i > 0 and i < N-1:
                 vec1 = np.array([centerline_x[i-1] - center_x, centerline_z[i-1] - center_y])
                 vec2 = np.array([centerline_x[i+1] - center_x, centerline_z[i+1] - center_y])
@@ -352,8 +345,10 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
             best_signed_distance = sign * dist
     return best_signed_distance
 
-def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_points,
-                                              front_distance=20.0, behind_distance=5.0):
+def get_local_centerline_points_by_distance(car_x, car_z, car_yaw,
+                                           centerline_points,
+                                           front_distance=20.0,
+                                           behind_distance=5.0):
     pts = np.array(centerline_points)  # shape (N,2)
     cum_dist = np.array(compute_centerline_cumulative_distance(pts[:,0].tolist(),
                                                                pts[:,1].tolist()))
@@ -437,52 +432,6 @@ def compute_acceleration(time, vx, vy):
     ay = np.concatenate([ay, [ay[-1]]])
     return ax, ay
 
-def run_tcp_server(realtime_driver, host='127.0.0.1', port=65432):
-    print(f"Setting up server on {host}:{port}...")
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((host, port))
-    server_socket.listen(5)
-    print("Server listening... Waiting for connection.")
-    client_socket, addr = server_socket.accept()
-    print(f"Connection from {addr}")
-    try:
-        while True:
-            raw_data = client_socket.recv(4096).decode('utf-8').strip()
-            if not raw_data:
-                time.sleep(0.01)
-                continue
-            fields = raw_data.split(',')
-            if len(fields) < 6:
-                print(raw_data)
-                continue
-            sim_time = time.time()
-            car_x = float(fields[0])
-            car_z = float(fields[1])
-            yaw_deg = float(fields[2])
-            vx = float(fields[3])
-            vy = float(fields[4])
-            yaw_rate = float(fields[5])
-            st_pred, th_pred, br_pred = realtime_driver.process_single_step(
-                time=sim_time,
-                x_pos=car_x,
-                z_pos=car_z,
-                yaw_angle_deg=yaw_deg,
-                long_vel=vx,
-                lat_vel=vy,
-                yaw_rate=yaw_rate,
-                steering_in=0,
-                throttle_in=0,
-                brake_in=0)
-            message = f"{st_pred},{th_pred},{br_pred}\n"
-            print(f"Sending: {message.strip()}")
-            client_socket.sendall(message.encode())
-    except Exception as e:
-        print(f"Error in server loop: {e}")
-    finally:
-        client_socket.close()
-        server_socket.close()
-        print("Server closed.")
-
 # ---------------------------------------------------------------------
 # ------------------ FEATURE TRANSFORMER (SCALER + PCA) ---------------
 # ---------------------------------------------------------------------
@@ -491,6 +440,8 @@ class FeatureTransformer:
     def __init__(self):
         self.scaler = None
         self.pca = None
+        self.numeric_cols = []
+        self.exclude_cols = []
 
     def fit_transform(self, df, exclude_cols=None, pca_variance=0.99):
         if exclude_cols is None:
@@ -511,17 +462,16 @@ class FeatureTransformer:
     def transform(self, df):
         if self.scaler is None or self.pca is None:
             raise RuntimeError("FeatureTransformer not fitted yet!")
-        numeric_cols = self.numeric_cols
-        exclude_cols = self.exclude_cols
-        for c in numeric_cols:
+        # If missing columns, fill with 0.0
+        for c in self.numeric_cols:
             if c not in df.columns:
                 df[c] = 0.0
-        scaled_data = self.scaler.transform(df[numeric_cols])
+        scaled_data = self.scaler.transform(df[self.numeric_cols])
         pca_data = self.pca.transform(scaled_data)
         pc_columns = [f"PC{i+1}" for i in range(pca_data.shape[1])]
         df_pca = pd.DataFrame(pca_data, columns=pc_columns)
         df_excl = pd.DataFrame()
-        for c in exclude_cols:
+        for c in self.exclude_cols:
             if c in df.columns:
                 df_excl[c] = df[c].values
         df_excl = df_excl.reset_index(drop=True)
@@ -603,7 +553,7 @@ class NNDriver:
         return self.model.loss_
 
 # ---------------------------------------------------------------------
-# ------------------  NNDriverFramework (Centralized Realtime Mode) ---------------
+# ------------------  NNDriverFramework (Centralized Realtime + Visual) ---------------
 # ---------------------------------------------------------------------
 
 class NNDriverFramework:
@@ -612,12 +562,17 @@ class NNDriverFramework:
         self.model_path = model_path
         self.transformer = FeatureTransformer()
         self.nn_model = NNDriver()
-        # For acceleration state in realtime mode
+        # For realtime acceleration state
         self.last_time = None
         self.last_vx = None
         self.last_vy = None
 
     def postprocess_csv(self, data_dict, blue_cones, yellow_cones, clx, clz):
+        """
+        Shifts car to left seat, resamples the centerline reversed,
+        and calculates raycasts, local centerline geometry, etc.
+        Produces a DataFrame of raw features (NOT scaled or PCA-reduced).
+        """
         data_dict = shift_car_position(data_dict)
         clx_rev = clx[::-1]
         clz_rev = clz[::-1]
@@ -631,6 +586,7 @@ class NNDriverFramework:
         vx_arr = data_dict["long_vel"]
         vy_arr = data_dict["lat_vel"]
         ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
+
         for i in range(len(time_arr)):
             car_x = data_dict["x_pos"][i]
             car_z = data_dict["z_pos"][i]
@@ -662,14 +618,15 @@ class NNDriverFramework:
                 "track_width": tw0,
                 "curvature": c0,
             }
+            # store the raycasts
             for idx, dist_val in enumerate(yrd, start=1):
                 row_dict[f"yr{idx}"] = dist_val
             for idx, dist_val in enumerate(brd, start=1):
                 row_dict[f"br{idx}"] = dist_val
 
-            # --- Compute local centerline features ---
+            # local centerline features
             front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
-                car_x, car_z, math.radians(yaw_deg), centerline_pts,
+                car_x, car_z, yaw_rad, centerline_pts,
                 front_distance=20.0, behind_distance=5.0
             )
             if len(front_local) > 0:
@@ -686,10 +643,13 @@ class NNDriverFramework:
                 x_behind = bl[:,0]
                 z_behind = bl[:,1]
                 target_x_b = np.arange(-5,0)
-                target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
+                target_z_b = np.interp(target_x_b, x_behind, z_behind,
+                                       left=z_behind[0], right=z_behind[-1])
             else:
                 target_x_b = np.arange(-5,0)
                 target_z_b = np.full(5, float("nan"))
+
+            # store front info
             for j, d in enumerate(target_x, start=1):
                 row_dict[f"rel_z{j}"] = target_z[j-1]
                 idx_front = i_proj + int(round(d))
@@ -699,6 +659,7 @@ class NNDriverFramework:
                 else:
                     row_dict[f"c{j}"] = float("nan")
                     row_dict[f"tw{j}"] = float("nan")
+            # store behind info
             for j, d in enumerate(target_x_b, start=1):
                 row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
                 idx_behind = i_proj + int(round(d))
@@ -708,15 +669,20 @@ class NNDriverFramework:
                 else:
                     row_dict[f"b_c{j}"] = float("nan")
                     row_dict[f"b_tw{j}"] = float("nan")
+
             row_dict["c0"] = c0
             row_dict["tw0"] = tw0
-            # --- End new fields ---
+
             rows.append(row_dict)
+
         df_out = pd.DataFrame(rows)
         return df_out
 
     def process_realtime_frame(self, sensor_data, track_data):
-        # sensor_data: dictionary with keys: time, x_pos, z_pos, yaw_deg, long_vel, lat_vel, yaw_rate, steering, throttle, brake
+        """
+        For each new sensor reading (car_x, car_z, yaw, velocities,...),
+        shift left seat and compute the same features used for training.
+        """
         t = sensor_data["time"]
         car_x = sensor_data["x_pos"]
         car_z = sensor_data["z_pos"]
@@ -728,10 +694,8 @@ class NNDriverFramework:
         throttle = sensor_data["throttle"]
         brake = sensor_data["brake"]
 
-        # Shift car position
         x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=1.5)
-
-        # Compute acceleration using previous frame state
+        # compute local acceleration from last frame
         if self.last_time is None or self.last_vx is None or self.last_vy is None:
             ax, ay = 0.0, 0.0
         else:
@@ -746,10 +710,14 @@ class NNDriverFramework:
 
         yaw_rad = math.radians(yaw_deg)
         yrd, brd = raycast_for_state(x_shifted, z_shifted, yaw_rad,
-                                      track_data["ordered_blue"], track_data["ordered_yellow"],
-                                      max_distance=20.0)
-        dc = compute_signed_distance_to_centerline(x_shifted, z_shifted, track_data["r_clx"], track_data["r_clz"])
-        dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad, track_data["r_clx"], track_data["r_clz"])
+                                     track_data["ordered_blue"],
+                                     track_data["ordered_yellow"],
+                                     max_distance=20.0)
+        dc = compute_signed_distance_to_centerline(x_shifted, z_shifted,
+                                                   track_data["r_clx"],
+                                                   track_data["r_clz"])
+        dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad,
+                                        track_data["r_clx"], track_data["r_clz"])
         dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in track_data["centerline_pts"]]
         i_proj = int(np.argmin(dists))
         if i_proj < len(track_data["r_clx"]):
@@ -759,7 +727,6 @@ class NNDriverFramework:
             c0 = float("nan")
             tw0 = float("nan")
 
-        # Compute local centerline features
         front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
             car_x, car_z, yaw_rad, track_data["centerline_pts"],
             front_distance=20.0, behind_distance=5.0
@@ -827,37 +794,52 @@ class NNDriverFramework:
         row_dict["tw0"] = tw0
         return row_dict
 
-    def train_mode(self, csv_path, json_path, output_csv_path=None, pca_variance=0.99, test_split=0.2):
+    def train_mode(self, csv_path, json_path, output_csv_path=None,
+                   pca_variance=0.99, test_split=0.2):
         print("[NNDriverFramework] Training mode...")
         data_dict = read_csv_data(csv_path)
         if data_dict is None:
             print("Could not load CSV data.")
             return
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+
+        # 1) Postprocess the CSV to produce raw features
         df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
         if output_csv_path:
             df_features.to_csv(output_csv_path, index=False)
             print(f"[NNDriverFramework] Postprocessed CSV saved: {output_csv_path}")
-        df_trans = self.transformer.fit_transform(df_features, exclude_cols=["steering", "throttle", "brake"], pca_variance=pca_variance)
+
+        # 2) Fit the transformer (scaler + PCA) on the raw features
+        df_trans = self.transformer.fit_transform(df_features,
+                                                  exclude_cols=["steering","throttle","brake"],
+                                                  pca_variance=pca_variance)
         self.transformer.save(self.transformer_path)
         print(f"[NNDriverFramework] Transformer saved to {self.transformer_path}")
+
+        # 3) Train the MLP model
         pc_cols = [c for c in df_trans.columns if c.startswith("PC")]
         out_cols = ["steering", "throttle", "brake"]
         X = df_trans[pc_cols].values
         y = df_trans[out_cols].values
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_split, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(X, y,
+                                                            test_size=test_split,
+                                                            random_state=42)
+
         train_df = pd.DataFrame(X_train, columns=pc_cols)
         train_df["steering"] = y_train[:, 0]
         train_df["throttle"] = y_train[:, 1]
         train_df["brake"] = y_train[:, 2]
+
         test_df = pd.DataFrame(X_test, columns=pc_cols)
         test_df["steering"] = y_test[:, 0]
         test_df["throttle"] = y_test[:, 1]
         test_df["brake"] = y_test[:, 2]
+
         self.nn_model.train(train_df)
         mse_value = self.nn_model.evaluate(test_df)
         print("[NNDriverFramework] Test MSE:", mse_value)
         print("[NNDriverFramework] Final Loss:", self.nn_model.get_loss())
+
         joblib.dump(self.nn_model, self.model_path)
         print(f"[NNDriverFramework] NN model saved to {self.model_path}")
 
@@ -870,8 +852,12 @@ class NNDriverFramework:
             print("Could not load CSV data.")
             return
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+
+        # postprocess to produce same columns
         df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
         df_trans = self.transformer.transform(df_features)
+
+        # run predictions
         predictions = self.nn_model.predict(df_trans)
         times = df_features["time"].values
         for i in range(len(df_features)):
@@ -881,16 +867,10 @@ class NNDriverFramework:
         print("[NNDriverFramework] Inference complete.")
 
     def realtime_mode(self, track_json, host='127.0.0.1', port=65432):
-        """
-        Realtime mode: loads the transformer and NN model, reads track geometry,
-        computes the resampled centerline (with curvature and track width), and then
-        sets up a TCP server to process incoming sensor data. Each sensor reading is
-        processed to compute the full feature vector (including local centerline features)
-        before being transformed and fed to the NN for predictions.
-        """
+        print("[NNDriverFramework] Realtime mode...")
         self.transformer.load(self.transformer_path)
         self.nn_model = joblib.load(self.model_path)
-        # Parse track JSON and compute track-related data.
+
         with open(track_json, 'r') as f:
             data = json.load(f)
         x_values = data.get("x", [])
@@ -900,6 +880,8 @@ class NNDriverFramework:
         clz = data.get("centerline_y", [])
         blue_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "blue"]
         yellow_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "yellow"]
+
+        # build track data for repeated usage
         clx_rev = clx[::-1]
         clz_rev = clz[::-1]
         r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
@@ -907,7 +889,7 @@ class NNDriverFramework:
         ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
         curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
         track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
-        # Pack track data for realtime processing.
+
         track_data = {
             "r_clx": r_clx,
             "r_clz": r_clz,
@@ -917,13 +899,15 @@ class NNDriverFramework:
             "curvatures_all": curvatures_all,
             "track_widths_all": track_widths_all
         }
-        print(f"[Realtime] Setting up server on {host}:{port}...")
+
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.bind((host, port))
         server_socket.listen(5)
-        print("[Realtime] Server listening... Waiting for connection.")
+        print(f"[Realtime] Server listening on {host}:{port}...")
+
         client_socket, addr = server_socket.accept()
         print(f"[Realtime] Connection from {addr}")
+
         try:
             while True:
                 raw_data = client_socket.recv(4096).decode('utf-8').strip()
@@ -934,17 +918,19 @@ class NNDriverFramework:
                 if len(fields) < 6:
                     print(raw_data)
                     continue
-                sensor_data = {}
-                sensor_data["time"] = time.time()
-                sensor_data["x_pos"] = float(fields[0])
-                sensor_data["z_pos"] = float(fields[1])
-                sensor_data["yaw_deg"] = float(fields[2])
-                sensor_data["long_vel"] = float(fields[3])
-                sensor_data["lat_vel"] = float(fields[4])
-                sensor_data["yaw_rate"] = float(fields[5])
-                sensor_data["steering"] = 0.0
-                sensor_data["throttle"] = 0.0
-                sensor_data["brake"] = 0.0
+                sensor_data = {
+                    "time": time.time(),
+                    "x_pos": float(fields[0]),
+                    "z_pos": float(fields[1]),
+                    "yaw_deg": float(fields[2]),
+                    "long_vel": float(fields[3]),
+                    "lat_vel": float(fields[4]),
+                    "yaw_rate": float(fields[5]),
+                    "steering": 0.0,
+                    "throttle": 0.0,
+                    "brake": 0.0
+                }
+                # produce single-row features
                 row_dict = self.process_realtime_frame(sensor_data, track_data)
                 df_single = pd.DataFrame([row_dict])
                 df_trans = self.transformer.transform(df_single)
@@ -960,35 +946,215 @@ class NNDriverFramework:
             server_socket.close()
             print("[Realtime] Server closed.")
 
+    def visual_mode(self, csv_path, json_path, heading_length=3.0):
+        """
+        1) Read & postprocess a raw CSV (like in train/infer).
+        2) Animate the relevant local-frame columns to visualize the track geometry, raycasts, etc.
+        """
+        print("[NNDriverFramework] Visualizing postprocessed features...")
+        # 1) read raw data and do the same postprocessing steps
+        data_dict = read_csv_data(csv_path)
+        if data_dict is None:
+            print("Could not load CSV data.")
+            return
+        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+        df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
+
+        # 2) Animate the relevant columns
+        self.animate_features(df_features, heading_length)
+
+    def animate_features(self, df_features, heading_length=3.0):
+        """
+        Animates the same columns used for training & inference:
+         - local centerline offsets (rel_z, b_rel_z)
+         - raycast distances (yr, br)
+         - track width & curvature
+         - heading difference as a bar.
+        """
+        frames = df_features.to_dict(orient="records")
+
+        fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(10,10), gridspec_kw={'height_ratios':[3,1]})
+        fig.subplots_adjust(right=0.7)
+        ax_top.set_xlim(-10, 30)
+        ax_top.set_ylim(-10, 10)
+        ax_top.set_aspect('equal', adjustable='box')
+        ax_top.set_title("Local Frame (Car Fixed at (0,0), Heading = 0°)")
+        ax_top.set_xlabel("Local X (m)")
+        ax_top.set_ylabel("Local Z (m)")
+
+        ax_heading = fig.add_axes([0.75, 0.1, 0.1, 0.19])
+        ax_heading.set_title("Heading Diff (rad)")
+        ax_heading.set_ylim(-1,1)
+        ax_heading.set_xticks([])
+        heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
+
+        car_point, = ax_top.plot([], [], 'ko', ms=8, label='Car')
+        heading_line, = ax_top.plot([], [], 'r-', lw=2, label='Heading')
+
+        front_scatter = ax_top.scatter([], [], c='magenta', s=25, label='Front Centerline')
+        behind_scatter = ax_top.scatter([], [], c='green', s=25, label='Behind Centerline')
+        centerline_line, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
+        centerline_bline, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
+
+        yellow_angles_deg = np.arange(-20, 111, 10)
+        blue_angles_deg = np.arange(20, -111, -10)
+        yellow_angles = np.deg2rad(yellow_angles_deg)
+        blue_angles = np.deg2rad(blue_angles_deg)
+        yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0]
+                            for _ in range(len(yellow_angles))]
+        blue_ray_lines = [ax_top.plot([], [], color='cyan', linestyle='--', lw=1)[0]
+                          for _ in range(len(blue_angles))]
+
+        ax_bottom.set_title("Track Width and Centerline Curvature")
+        ax_bottom.set_xlabel("Local X (m)")
+        ax_bottom.set_ylabel("Track Width (m)")
+        ax_bottom.set_xlim(-5, 20)
+        ax_bottom.set_ylim(0, 10)
+
+        track_width_line, = ax_bottom.plot([], [], 'bo-', label='Forward Track Width')
+        track_width_line_back, = ax_bottom.plot([], [], 'go-', label='Backward Track Width')
+        ax_bottom.legend(loc='upper left')
+
+        ax_curv = ax_bottom.twinx()
+        curvature_line, = ax_curv.plot([], [], 'r.-', label='Forward Curvature (1/m)')
+        curvature_line_back, = ax_curv.plot([], [], 'm.-', label='Backward Curvature (1/m)')
+        ax_curv.set_ylim(-0.5, 0.5)
+        ax_curv.legend(loc='upper right')
+
+        def update(frame_idx):
+            frame = frames[frame_idx]
+
+            # Car in local frame at (0,0)
+            car_point.set_data([0], [0])
+            # Heading line of fixed length
+            heading_line.set_data([0, heading_length], [0, 0])
+
+            # We'll use "dist_center" or similar if needed; here's minimal change:
+            dc = frame.get("dc", 0)  # not strictly used, but let's keep minimal changes
+
+            # Show front local centerline points: 0..+20
+            front_points = [[0, dc]]  # just for illustration
+            for i in range(1, 21):
+                x_val = float(i)
+                z_val = frame.get(f"rel_z{i}", float("nan"))
+                front_points.append([x_val, z_val])
+            front_scatter.set_offsets(np.array(front_points))
+
+            # Show behind local centerline points: -5..-1
+            behind_points = []
+            for i, x_val in enumerate(range(-5, 0), start=1):
+                z_val = frame.get(f"b_rel_z{i}", float("nan"))
+                behind_points.append([float(x_val), z_val])
+            behind_scatter.set_offsets(np.array(behind_points))
+
+            # Lines for the front & behind centerline
+            centerline_x = np.arange(1, 21)
+            centerline_z = [frame.get(f"rel_z{i}", float("nan")) for i in range(1, 21)]
+            centerline_line.set_data(centerline_x, centerline_z)
+
+            centerline_bx = np.arange(-5, 0)
+            centerline_bz = [frame.get(f"b_rel_z{i}", float("nan")) for i in range(1, 6)]
+            centerline_bline.set_data(centerline_bx, centerline_bz)
+
+            # Raycasts to yellow and blue edges
+            for i, angle in enumerate(yellow_angles):
+                distance = frame.get(f"yr{i+1}", 0)
+                end_x = distance * math.cos(angle)
+                end_z = distance * math.sin(angle)
+                yellow_ray_lines[i].set_data([0, end_x], [0, end_z])
+
+            for i, angle in enumerate(blue_angles):
+                distance = frame.get(f"br{i+1}", 0)
+                end_x = distance * math.cos(angle)
+                end_z = distance * math.sin(angle)
+                blue_ray_lines[i].set_data([0, end_x], [0, end_z])
+
+            # Track width & curvature for forward portion
+            tws, curvs = [], []
+            for i in range(0, 21):
+                tws.append(frame.get(f"tw{i}", float("nan")))
+                curvs.append(frame.get(f"c{i}", float("nan")))
+            local_xs = list(range(0, 21))
+            track_width_line.set_data(local_xs, tws)
+            curvature_line.set_data(local_xs, curvs)
+
+            # Track width & curvature for the behind portion
+            btws, bcurvs = [], []
+            for i in range(1, 6):
+                btws.append(frame.get(f"b_tw{i}", float("nan")))
+                bcurvs.append(frame.get(f"b_c{i}", float("nan")))
+            local_xs_b = list(range(-5, 0))
+            track_width_line_back.set_data(local_xs_b, btws)
+            curvature_line_back.set_data(local_xs_b, bcurvs)
+
+            # Show heading difference as a bar
+            dh = frame.get("head_diff", 0)  # or "dh"
+            if dh >= 0:
+                heading_bar[0].set_y(0)
+                heading_bar[0].set_height(dh)
+            else:
+                heading_bar[0].set_y(dh)
+                heading_bar[0].set_height(-dh)
+
+            return (car_point, heading_line, front_scatter, behind_scatter,
+                    centerline_line, centerline_bline,
+                    *yellow_ray_lines, *blue_ray_lines,
+                    track_width_line, track_width_line_back,
+                    curvature_line, curvature_line_back, heading_bar[0])
+
+        anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=20, blit=True)
+        plt.show()
+
+# ---------------------------------------------------------------------
+# ------------------ MAIN ENTRY POINT ---------------------------------
+# ---------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=str, default="train", help="train, infer, or realtime")
-    parser.add_argument("--csv", type=str, help="Path to CSV file (for train or infer)")
-    parser.add_argument("--json", type=str, default="default.json", help="Path to track JSON")
-    parser.add_argument("--transformer", type=str, default="transformer.joblib", help="Path to save/load the fitted scaler/PCA")
-    parser.add_argument("--model", type=str, default="nn_model.joblib", help="Path to save/load the trained model")
-    parser.add_argument("--output_csv", type=str, default=None, help="Optional path to save postprocessed CSV in train mode")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="TCP server host")
-    parser.add_argument("--port", type=int, default=65432, help="TCP server port")
+    parser.add_argument("--mode", type=str, default="train",
+                        help="train, infer, realtime, or visual")
+    parser.add_argument("--csv", type=str,
+                        help="Path to CSV file (for train, infer, or visual)")
+    parser.add_argument("--json", type=str, default="default.json",
+                        help="Path to track JSON")
+    parser.add_argument("--transformer", type=str, default="transformer.joblib",
+                        help="Path to save/load the fitted scaler/PCA")
+    parser.add_argument("--model", type=str, default="nn_model.joblib",
+                        help="Path to save/load the trained model")
+    parser.add_argument("--output_csv", type=str, default=None,
+                        help="Optional path to save postprocessed CSV in train mode")
+    parser.add_argument("--host", type=str, default="127.0.0.1",
+                        help="TCP server host")
+    parser.add_argument("--port", type=int, default=65432,
+                        help="TCP server port")
     args = parser.parse_args()
 
-    if args.mode.lower() == "train":
+    framework = NNDriverFramework(transformer_path=args.transformer,
+                                  model_path=args.model)
+
+    mode = args.mode.lower()
+    if mode == "train":
         if not args.csv:
             print("Must provide --csv for training.")
             return
-        framework = NNDriverFramework(transformer_path=args.transformer, model_path=args.model)
-        framework.train_mode(args.csv, args.json, output_csv_path=args.output_csv)
-    elif args.mode.lower() == "infer":
+        framework.train_mode(csv_path=args.csv,
+                             json_path=args.json,
+                             output_csv_path=args.output_csv)
+    elif mode == "infer":
         if not args.csv:
             print("Must provide --csv for inference.")
             return
-        framework = NNDriverFramework(transformer_path=args.transformer, model_path=args.model)
-        framework.inference_mode(args.csv, args.json)
-    elif args.mode.lower() == "realtime":
-        framework = NNDriverFramework(transformer_path=args.transformer, model_path=args.model)
-        framework.realtime_mode(args.json, host=args.host, port=args.port)
+        framework.inference_mode(csv_path=args.csv, json_path=args.json)
+    elif mode == "realtime":
+        framework.realtime_mode(track_json=args.json, host=args.host, port=args.port)
+    elif mode == "visual":
+        if not args.csv:
+            print("Must provide --csv for visualization.")
+            return
+        # The framework itself handles the postprocessing & animation
+        framework.visual_mode(csv_path=args.csv, json_path=args.json)
     else:
-        print("Unknown mode. Use --mode train, infer, or realtime.")
+        print("Unknown mode. Use --mode train, infer, realtime, or visual.")
 
 if __name__ == "__main__":
     main()
