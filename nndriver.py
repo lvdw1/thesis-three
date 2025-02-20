@@ -506,6 +506,7 @@ class NNDriver:
                  learning_rate_init=0.001,
                  max_iter=1000,
                  tol=1e-6,
+                 random_state=42,
                  verbose=True,
                  early_stopping=False):
         self.model = MLPRegressor(
