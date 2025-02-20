@@ -8,6 +8,7 @@ Unified codebase for:
   - Training and/or running inference with an MLPRegressor-based NN.
   - Realtime driving via TCP socket.
   - Visualizing postprocessed data (to confirm the NN’s inputs look correct).
+  - Visualizing data in "realtime" fashion, calling process_realtime_frame per timestep.
 """
 
 import os
@@ -950,6 +951,7 @@ class NNDriverFramework:
         """
         1) Read & postprocess a raw CSV (like in train/infer).
         2) Animate the relevant local-frame columns to visualize the track geometry, raycasts, etc.
+        (All at once, after full postprocessing.)
         """
         print("[NNDriverFramework] Visualizing postprocessed features...")
         # 1) read raw data and do the same postprocessing steps
@@ -960,25 +962,52 @@ class NNDriverFramework:
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
         df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
 
-        # 2) Animate the relevant columns
+        # 2) Animate the columns
         self.animate_features(df_features, heading_length)
 
-    def animate_features(self, df_features, heading_length=3.0):
+    def visual_realtime_mode(self, csv_path, json_path, heading_length=3.0):
         """
-        Animates the same columns used for training & inference:
-         - local centerline offsets (rel_z, b_rel_z)
-         - raycast distances (yr, br)
-         - track width & curvature
-         - heading difference as a bar.
+        Processes each CSV row one at a time (via process_realtime_frame)
+        and updates the plot immediately before moving on.
         """
-        frames = df_features.to_dict(orient="records")
+        print("[NNDriverFramework] Visualize-Realtime mode (immediate plotting)...")
+        # Reset any 'last_*' state so each run starts fresh
+        self.last_time = None
+        self.last_vx = None
+        self.last_vy = None
 
+        data_dict = read_csv_data(csv_path)
+        if data_dict is None:
+            print("Could not load CSV data.")
+            return
+
+        # Build the same 'track_data' used in realtime_mode
+        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+        clx_rev = clx[::-1]
+        clz_rev = clz[::-1]
+        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
+        centerline_pts = list(zip(r_clx, r_clz))
+        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
+        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
+        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
+
+        track_data = {
+            "r_clx": r_clx,
+            "r_clz": r_clz,
+            "centerline_pts": centerline_pts,
+            "ordered_blue": ordered_blue,
+            "ordered_yellow": ordered_yellow,
+            "curvatures_all": curvatures_all,
+            "track_widths_all": track_widths_all
+        }
+
+        # --- Prepare Matplotlib figure & axes (similar to animate_features) ---
         fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(10,10), gridspec_kw={'height_ratios':[3,1]})
         fig.subplots_adjust(right=0.7)
         ax_top.set_xlim(-10, 30)
         ax_top.set_ylim(-10, 10)
         ax_top.set_aspect('equal', adjustable='box')
-        ax_top.set_title("Local Frame (Car Fixed at (0,0), Heading = 0°)")
+        ax_top.set_title("Local Frame - RealTime Visualization")
         ax_top.set_xlabel("Local X (m)")
         ax_top.set_ylabel("Local Z (m)")
 
@@ -994,127 +1023,152 @@ class NNDriverFramework:
         front_scatter = ax_top.scatter([], [], c='magenta', s=25, label='Front Centerline')
         behind_scatter = ax_top.scatter([], [], c='green', s=25, label='Behind Centerline')
         centerline_line, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
-        centerline_bline, = ax_top.plot([], [], 'k-', lw=1, label='Centerline')
+        centerline_bline, = ax_top.plot([], [], 'k-', lw=1)
 
+        # Ray angles
         yellow_angles_deg = np.arange(-20, 111, 10)
-        blue_angles_deg = np.arange(20, -111, -10)
+        blue_angles_deg   = np.arange(20, -111, -10)
         yellow_angles = np.deg2rad(yellow_angles_deg)
-        blue_angles = np.deg2rad(blue_angles_deg)
+        blue_angles   = np.deg2rad(blue_angles_deg)
         yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0]
                             for _ in range(len(yellow_angles))]
         blue_ray_lines = [ax_top.plot([], [], color='cyan', linestyle='--', lw=1)[0]
                           for _ in range(len(blue_angles))]
 
+        # Bottom axes for track width & curvature
         ax_bottom.set_title("Track Width and Centerline Curvature")
         ax_bottom.set_xlabel("Local X (m)")
         ax_bottom.set_ylabel("Track Width (m)")
         ax_bottom.set_xlim(-5, 20)
         ax_bottom.set_ylim(0, 10)
 
-        track_width_line, = ax_bottom.plot([], [], 'bo-', label='Forward Track Width')
-        track_width_line_back, = ax_bottom.plot([], [], 'go-', label='Backward Track Width')
+        track_width_line, = ax_bottom.plot([], [], 'bo-', label='Fwd Track Width')
+        track_width_line_back, = ax_bottom.plot([], [], 'go-', label='Back Track Width')
         ax_bottom.legend(loc='upper left')
 
         ax_curv = ax_bottom.twinx()
-        curvature_line, = ax_curv.plot([], [], 'r.-', label='Forward Curvature (1/m)')
-        curvature_line_back, = ax_curv.plot([], [], 'm.-', label='Backward Curvature (1/m)')
+        curvature_line, = ax_curv.plot([], [], 'r.-', label='Fwd Curvature')
+        curvature_line_back, = ax_curv.plot([], [], 'm.-', label='Back Curvature')
         ax_curv.set_ylim(-0.5, 0.5)
         ax_curv.legend(loc='upper right')
+        # ----------------------------------------------------------------------
 
-        def update(frame_idx):
-            frame = frames[frame_idx]
+        # Iterate through each row in the CSV, process it, then update
+        t_arr = data_dict["time"]
+        x_arr = data_dict["x_pos"]
+        z_arr = data_dict["z_pos"]
+        yaw_arr = data_dict["yaw_angle"]
+        vx_arr = data_dict["long_vel"]
+        vy_arr = data_dict["lat_vel"]
+        yr_arr = data_dict["yaw_rate"]
+        st_arr = data_dict["steering"]
+        th_arr = data_dict["throttle"]
+        br_arr = data_dict["brake"]
 
-            # Car in local frame at (0,0)
+        for i in range(len(t_arr)):
+            # 1) Build the sensor_data row
+            sensor_data = {
+                "time":     t_arr[i],
+                "x_pos":    x_arr[i],
+                "z_pos":    z_arr[i],
+                "yaw_deg":  yaw_arr[i],
+                "long_vel": vx_arr[i],
+                "lat_vel":  vy_arr[i],
+                "yaw_rate": yr_arr[i],
+                "steering": st_arr[i],
+                "throttle": th_arr[i],
+                "brake":    br_arr[i],
+            }
+
+            # 2) Use process_realtime_frame for the actual feature extraction
+            frame = self.process_realtime_frame(sensor_data, track_data)
+
+            # 3) Immediately update the plot with the newly computed frame
+            #    (Essentially the same block you'd do in your FuncAnimation update)
+            # -----------------------------------------------------------------
             car_point.set_data([0], [0])
-            # Heading line of fixed length
             heading_line.set_data([0, heading_length], [0, 0])
 
-            # We'll use "dist_center" or similar if needed; here's minimal change:
-            dc = frame.get("dc", 0)  # not strictly used, but let's keep minimal changes
+            # front local centerline points
+            front_pts = []
+            for j in range(1, 21):
+                x_val = float(j)
+                z_val = frame.get(f"rel_z{j}", float("nan"))
+                front_pts.append([x_val, z_val])
+            front_scatter.set_offsets(np.array(front_pts))
 
-            # Show front local centerline points: 0..+20
-            front_points = [[0, dc]]  # just for illustration
-            for i in range(1, 21):
-                x_val = float(i)
-                z_val = frame.get(f"rel_z{i}", float("nan"))
-                front_points.append([x_val, z_val])
-            front_scatter.set_offsets(np.array(front_points))
+            # behind local centerline
+            behind_pts = []
+            for j, x_val in enumerate(range(-5, 0), start=1):
+                z_val = frame.get(f"b_rel_z{j}", float("nan"))
+                behind_pts.append([float(x_val), z_val])
+            behind_scatter.set_offsets(np.array(behind_pts))
 
-            # Show behind local centerline points: -5..-1
-            behind_points = []
-            for i, x_val in enumerate(range(-5, 0), start=1):
-                z_val = frame.get(f"b_rel_z{i}", float("nan"))
-                behind_points.append([float(x_val), z_val])
-            behind_scatter.set_offsets(np.array(behind_points))
+            # lines for front & behind
+            cl_x_fwd = np.arange(1, 21)
+            cl_z_fwd = [frame.get(f"rel_z{k}", float("nan")) for k in range(1,21)]
+            centerline_line.set_data(cl_x_fwd, cl_z_fwd)
 
-            # Lines for the front & behind centerline
-            centerline_x = np.arange(1, 21)
-            centerline_z = [frame.get(f"rel_z{i}", float("nan")) for i in range(1, 21)]
-            centerline_line.set_data(centerline_x, centerline_z)
+            cl_x_b = np.arange(-5, 0)
+            cl_z_b = [frame.get(f"b_rel_z{k}", float("nan")) for k in range(1,6)]
+            centerline_bline.set_data(cl_x_b, cl_z_b)
 
-            centerline_bx = np.arange(-5, 0)
-            centerline_bz = [frame.get(f"b_rel_z{i}", float("nan")) for i in range(1, 6)]
-            centerline_bline.set_data(centerline_bx, centerline_bz)
+            # rays
+            for idx, angle in enumerate(yellow_angles):
+                dist_val = frame.get(f"yr{idx+1}", 0)
+                end_x = dist_val * math.cos(angle)
+                end_z = dist_val * math.sin(angle)
+                yellow_ray_lines[idx].set_data([0, end_x], [0, end_z])
 
-            # Raycasts to yellow and blue edges
-            for i, angle in enumerate(yellow_angles):
-                distance = frame.get(f"yr{i+1}", 0)
-                end_x = distance * math.cos(angle)
-                end_z = distance * math.sin(angle)
-                yellow_ray_lines[i].set_data([0, end_x], [0, end_z])
+            for idx, angle in enumerate(blue_angles):
+                dist_val = frame.get(f"br{idx+1}", 0)
+                end_x = dist_val * math.cos(angle)
+                end_z = dist_val * math.sin(angle)
+                blue_ray_lines[idx].set_data([0, end_x], [0, end_z])
 
-            for i, angle in enumerate(blue_angles):
-                distance = frame.get(f"br{i+1}", 0)
-                end_x = distance * math.cos(angle)
-                end_z = distance * math.sin(angle)
-                blue_ray_lines[i].set_data([0, end_x], [0, end_z])
-
-            # Track width & curvature for forward portion
+            # track width & curvature (front)
             tws, curvs = [], []
-            for i in range(0, 21):
-                tws.append(frame.get(f"tw{i}", float("nan")))
-                curvs.append(frame.get(f"c{i}", float("nan")))
-            local_xs = list(range(0, 21))
-            track_width_line.set_data(local_xs, tws)
-            curvature_line.set_data(local_xs, curvs)
+            for j in range(0, 21):
+                tws.append(frame.get(f"tw{j}", float("nan")))
+                curvs.append(frame.get(f"c{j}", float("nan")))
+            track_width_line.set_data(range(21), tws)
+            curvature_line.set_data(range(21), curvs)
 
-            # Track width & curvature for the behind portion
+            # behind
             btws, bcurvs = [], []
-            for i in range(1, 6):
-                btws.append(frame.get(f"b_tw{i}", float("nan")))
-                bcurvs.append(frame.get(f"b_c{i}", float("nan")))
+            for j in range(1, 6):
+                btws.append(frame.get(f"b_tw{j}", float("nan")))
+                bcurvs.append(frame.get(f"b_c{j}", float("nan")))
             local_xs_b = list(range(-5, 0))
             track_width_line_back.set_data(local_xs_b, btws)
             curvature_line_back.set_data(local_xs_b, bcurvs)
 
-            # Show heading difference as a bar
-            dh = frame.get("head_diff", 0)  # or "dh"
+            # heading diff bar
+            dh = frame.get("head_diff", 0)
             if dh >= 0:
                 heading_bar[0].set_y(0)
                 heading_bar[0].set_height(dh)
             else:
                 heading_bar[0].set_y(dh)
                 heading_bar[0].set_height(-dh)
+            # -----------------------------------------------------------------
 
-            return (car_point, heading_line, front_scatter, behind_scatter,
-                    centerline_line, centerline_bline,
-                    *yellow_ray_lines, *blue_ray_lines,
-                    track_width_line, track_width_line_back,
-                    curvature_line, curvature_line_back, heading_bar[0])
+            # 4) Force a draw and short pause so it updates in real time
+            plt.draw()
+            plt.pause(0.05)
 
-        anim = animation.FuncAnimation(fig, update, frames=len(frames), interval=20, blit=True)
-        plt.show()
+        print("[NNDriverFramework] Finished frame-by-frame realtime visualization.")
 
-# ---------------------------------------------------------------------
+        # ---------------------------------------------------------------------
 # ------------------ MAIN ENTRY POINT ---------------------------------
 # ---------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="train",
-                        help="train, infer, realtime, or visual")
+                        help="train, infer, realtime, visual, or visualize-realtime")
     parser.add_argument("--csv", type=str,
-                        help="Path to CSV file (for train, infer, or visual)")
+                        help="Path to CSV file (for train, infer, visual, or visualize-realtime)")
     parser.add_argument("--json", type=str, default="default.json",
                         help="Path to track JSON")
     parser.add_argument("--transformer", type=str, default="transformer.joblib",
@@ -1153,8 +1207,14 @@ def main():
             return
         # The framework itself handles the postprocessing & animation
         framework.visual_mode(csv_path=args.csv, json_path=args.json)
+    elif mode == "visualize-realtime":
+        # NEW MODE: step-by-step "realtime" approach, from CSV
+        if not args.csv:
+            print("Must provide --csv for 'visualize-realtime'.")
+            return
+        framework.visual_realtime_mode(csv_path=args.csv, json_path=args.json)
     else:
-        print("Unknown mode. Use --mode train, infer, realtime, or visual.")
+        print("Unknown mode. Use --mode train, infer, realtime, visual, or visualize-realtime.")
 
 if __name__ == "__main__":
     main()
