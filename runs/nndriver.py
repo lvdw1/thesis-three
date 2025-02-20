@@ -568,121 +568,45 @@ class NNDriverFramework:
         self.last_vx = None
         self.last_vy = None
 
-    def postprocess_csv(self, data_dict, blue_cones, yellow_cones, clx, clz):
-        """
-        Shifts car to left seat, resamples the centerline reversed,
-        and calculates raycasts, local centerline geometry, etc.
-        Produces a DataFrame of raw features (NOT scaled or PCA-reduced).
-        """
-        data_dict = shift_car_position(data_dict)
-        clx_rev = clx[::-1]
-        clz_rev = clz[::-1]
-        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
-        centerline_pts = list(zip(r_clx, r_clz))
-        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
-        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
-        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
-        rows = []
-        time_arr = data_dict["time"]
+    def process_csv(self, data_dict, track_data):
+        """Process an entire CSV file frame‐by‐frame using process_realtime_frame."""
+        # Reset realtime state for consistent processing
+        self.last_time = None
+        self.last_vx = None
+        self.last_vy = None
+        frames = []
+        t_arr = data_dict["time"]
+        x_arr = data_dict["x_pos"]
+        z_arr = data_dict["z_pos"]
+        yaw_arr = data_dict["yaw_angle"]
         vx_arr = data_dict["long_vel"]
         vy_arr = data_dict["lat_vel"]
-        ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
-
-        for i in range(len(time_arr)):
-            car_x = data_dict["x_pos"][i]
-            car_z = data_dict["z_pos"][i]
-            yaw_deg = data_dict["yaw_angle"][i]
-            yaw_rad = math.radians(yaw_deg)
-            yrd, brd = raycast_for_state(car_x, car_z, yaw_rad, ordered_blue, ordered_yellow, max_distance=20.0)
-            dc = compute_signed_distance_to_centerline(car_x, car_z, r_clx, r_clz)
-            dh = compute_heading_difference(car_x, car_z, yaw_rad, r_clx, r_clz)
-            dists = [math.hypot(px - car_x, pz - car_z) for px, pz in centerline_pts]
-            i_proj = int(np.argmin(dists))
-            tw0 = track_widths_all[i_proj]["width"] if i_proj < len(track_widths_all) else np.nan
-            c0 = curvatures_all[i_proj] if i_proj < len(curvatures_all) else np.nan
-
-            row_dict = {
-                "time": time_arr[i],
-                "x_pos": car_x,
-                "z_pos": car_z,
-                "yaw_deg": yaw_deg,
+        yr_arr = data_dict["yaw_rate"]
+        st_arr = data_dict["steering"]
+        th_arr = data_dict["throttle"]
+        br_arr = data_dict["brake"]
+        for i in range(len(t_arr)):
+            sensor_data = {
+                "time": t_arr[i],
+                "x_pos": x_arr[i],
+                "z_pos": z_arr[i],
+                "yaw_deg": yaw_arr[i],
                 "long_vel": vx_arr[i],
                 "lat_vel": vy_arr[i],
-                "yaw_rate": data_dict["yaw_rate"][i],
-                "steering": data_dict["steering"][i],
-                "throttle": data_dict["throttle"][i],
-                "brake": data_dict["brake"][i],
-                "ax": ax_arr[i],
-                "ay": ay_arr[i],
-                "dist_center": -dc,
-                "head_diff": dh,
-                "track_width": tw0,
-                "curvature": c0,
+                "yaw_rate": yr_arr[i],
+                "steering": st_arr[i],
+                "throttle": th_arr[i],
+                "brake": br_arr[i],
             }
-            # store the raycasts
-            for idx, dist_val in enumerate(yrd, start=1):
-                row_dict[f"yr{idx}"] = dist_val
-            for idx, dist_val in enumerate(brd, start=1):
-                row_dict[f"br{idx}"] = dist_val
+            frame = self.process_realtime_frame(sensor_data, track_data)
+            frames.append(frame)
+        return pd.DataFrame(frames)
 
-            # local centerline features
-            front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
-                car_x, car_z, yaw_rad, centerline_pts,
-                front_distance=20.0, behind_distance=5.0
-            )
-            if len(front_local) > 0:
-                fl = np.array(front_local)
-                x_front = fl[:,0]
-                z_front = fl[:,1]
-                target_x = np.arange(1,21)
-                target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
-            else:
-                target_x = np.arange(1,21)
-                target_z = np.full(20, float("nan"))
-            if len(behind_local) > 0:
-                bl = np.array(behind_local)
-                x_behind = bl[:,0]
-                z_behind = bl[:,1]
-                target_x_b = np.arange(-5,0)
-                target_z_b = np.interp(target_x_b, x_behind, z_behind,
-                                       left=z_behind[0], right=z_behind[-1])
-            else:
-                target_x_b = np.arange(-5,0)
-                target_z_b = np.full(5, float("nan"))
-
-            # store front info
-            for j, d in enumerate(target_x, start=1):
-                row_dict[f"rel_z{j}"] = target_z[j-1]
-                idx_front = i_proj + int(round(d))
-                if idx_front < len(r_clx):
-                    row_dict[f"c{j}"] = curvatures_all[idx_front]
-                    row_dict[f"tw{j}"] = track_widths_all[idx_front]["width"]
-                else:
-                    row_dict[f"c{j}"] = float("nan")
-                    row_dict[f"tw{j}"] = float("nan")
-            # store behind info
-            for j, d in enumerate(target_x_b, start=1):
-                row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
-                idx_behind = i_proj + int(round(d))
-                if 0 <= idx_behind < len(r_clx):
-                    row_dict[f"b_c{j}"] = curvatures_all[idx_behind]
-                    row_dict[f"b_tw{j}"] = track_widths_all[idx_behind]["width"]
-                else:
-                    row_dict[f"b_c{j}"] = float("nan")
-                    row_dict[f"b_tw{j}"] = float("nan")
-
-            row_dict["c0"] = c0
-            row_dict["tw0"] = tw0
-
-            rows.append(row_dict)
-
-        df_out = pd.DataFrame(rows)
-        return df_out
 
     def process_realtime_frame(self, sensor_data, track_data):
         """
         For each new sensor reading (car_x, car_z, yaw, velocities,...),
-        shift left seat and compute the same features used for training.
+        compute the same features used for training.
         """
         t = sensor_data["time"]
         car_x = sensor_data["x_pos"]
@@ -805,10 +729,28 @@ class NNDriverFramework:
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
 
         # 1) Postprocess the CSV to produce raw features
-        df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
+        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+        # Build track_data (same as in realtime_mode)
+        clx_rev = clx[::-1]
+        clz_rev = clz[::-1]
+        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
+        centerline_pts = list(zip(r_clx, r_clz))
+        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
+        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
+        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
+        track_data = {
+            "r_clx": r_clx,
+            "r_clz": r_clz,
+            "centerline_pts": centerline_pts,
+            "ordered_blue": ordered_blue,
+            "ordered_yellow": ordered_yellow,
+            "curvatures_all": curvatures_all,
+            "track_widths_all": track_widths_all
+        }
+        df_features = self.process_csv(data_dict, track_data)
         if output_csv_path:
             df_features.to_csv(output_csv_path, index=False)
-            print(f"[NNDriverFramework] Postprocessed CSV saved: {output_csv_path}")
+            print(f"[NNDriverFramework] Postprocessed CSV saved to {output_csv_path}")
 
         # 2) Fit the transformer (scaler + PCA) on the raw features
         df_trans = self.transformer.fit_transform(df_features,
@@ -855,7 +797,24 @@ class NNDriverFramework:
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
 
         # postprocess to produce same columns
-        df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
+        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+        clx_rev = clx[::-1]
+        clz_rev = clz[::-1]
+        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
+        centerline_pts = list(zip(r_clx, r_clz))
+        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
+        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
+        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
+        track_data = {
+            "r_clx": r_clx,
+            "r_clz": r_clz,
+            "centerline_pts": centerline_pts,
+            "ordered_blue": ordered_blue,
+            "ordered_yellow": ordered_yellow,
+            "curvatures_all": curvatures_all,
+            "track_widths_all": track_widths_all
+        }
+        df_features = self.process_csv(data_dict, track_data)
         df_trans = self.transformer.transform(df_features)
 
         # run predictions
@@ -947,23 +906,6 @@ class NNDriverFramework:
             server_socket.close()
             print("[Realtime] Server closed.")
 
-    def visual_mode(self, csv_path, json_path, heading_length=3.0):
-        """
-        1) Read & postprocess a raw CSV (like in train/infer).
-        2) Animate the relevant local-frame columns to visualize the track geometry, raycasts, etc.
-        (All at once, after full postprocessing.)
-        """
-        print("[NNDriverFramework] Visualizing postprocessed features...")
-        # 1) read raw data and do the same postprocessing steps
-        data_dict = read_csv_data(csv_path)
-        if data_dict is None:
-            print("Could not load CSV data.")
-            return
-        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-        df_features = self.postprocess_csv(data_dict, blue_cones, yellow_cones, clx, clz)
-
-        # 2) Animate the columns
-        self.animate_features(df_features, heading_length)
 
     def visual_realtime_mode(self, csv_path, json_path, heading_length=3.0):
         """
@@ -1165,7 +1107,7 @@ class NNDriverFramework:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="train",
-                        help="train, infer, realtime, visual, or visualize-realtime")
+                        help="train, infer, realtime, or visualize-realtime")
     parser.add_argument("--csv", type=str,
                         help="Path to CSV file (for train, infer, visual, or visualize-realtime)")
     parser.add_argument("--json", type=str, default="default.json",
@@ -1200,19 +1142,13 @@ def main():
         framework.inference_mode(csv_path=args.csv, json_path=args.json)
     elif mode == "realtime":
         framework.realtime_mode(track_json=args.json, host=args.host, port=args.port)
-    elif mode == "visual":
-        if not args.csv:
-            print("Must provide --csv for visualization.")
-            return
-        # The framework itself handles the postprocessing & animation
-        framework.visual_mode(csv_path=args.csv, json_path=args.json)
     elif mode == "visualize-realtime":
         if not args.csv:
             print("Must provide --csv for 'visualize-realtime'.")
             return
         framework.visual_realtime_mode(csv_path=args.csv, json_path=args.json)
     else:
-        print("Unknown mode. Use --mode train, infer, realtime, visual, or visualize-realtime.")
+        print("Unknown mode. Use --mode train, infer, realtime, or visualize-realtime.")
 
 if __name__ == "__main__":
     main()
