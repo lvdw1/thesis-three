@@ -132,18 +132,7 @@ def read_csv_data(file_path):
         "brake": np.array(brake),
     }
 
-def shift_car_position(data, shift_distance=1.5):
-    if data is None:
-        return None
-    for i in range(len(data["x_pos"])):
-        yaw = math.radians(data["yaw_angle"][i])
-        offset_x = shift_distance * math.sin(yaw)
-        offset_z = -shift_distance * math.cos(yaw)
-        data["x_pos"][i] += offset_x
-        data["z_pos"][i] += offset_z
-    return data
-
-def shift_position_single(x, z, yaw_deg, shift_distance=1.5):
+def shift_position_single(x, z, yaw_deg, shift_distance=-1.5):
     yaw = math.radians(yaw_deg)
     offset_x = shift_distance * math.sin(yaw)
     offset_z = -shift_distance * math.cos(yaw)
@@ -619,7 +608,7 @@ class NNDriverFramework:
         throttle = sensor_data["throttle"]
         brake = sensor_data["brake"]
 
-        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=1.5)
+        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=2.5)
         # compute local acceleration from last frame
         if self.last_time is None or self.last_vx is None or self.last_vy is None:
             ax, ay = 0.0, 0.0
@@ -649,11 +638,11 @@ class NNDriverFramework:
             c0 = track_data["curvatures_all"][i_proj]
             tw0 = track_data["track_widths_all"][i_proj]["width"]
         else:
-            c0 = float("nan")
-            tw0 = float("nan")
+            c0 = 0.0
+            tw0 = 4
 
         front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
-            car_x, car_z, yaw_rad, track_data["centerline_pts"],
+            x_shifted, z_shifted, yaw_rad, track_data["centerline_pts"],
             front_distance=20.0, behind_distance=5.0
         )
         if len(front_local) > 0:
@@ -664,7 +653,7 @@ class NNDriverFramework:
             target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
         else:
             target_x = np.arange(1,21)
-            target_z = np.full(20, float("nan"))
+            target_z = np.full(20, 0)
         if len(behind_local) > 0:
             bl = np.array(behind_local)
             x_behind = bl[:,0]
@@ -673,7 +662,7 @@ class NNDriverFramework:
             target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
         else:
             target_x_b = np.arange(-5,0)
-            target_z_b = np.full(5, float("nan"))
+            target_z_b = np.full(5, 0)
 
         row_dict = {
             "time": t,
@@ -704,8 +693,8 @@ class NNDriverFramework:
                 row_dict[f"c{j}"] = track_data["curvatures_all"][idx_front]
                 row_dict[f"tw{j}"] = track_data["track_widths_all"][idx_front]["width"]
             else:
-                row_dict[f"c{j}"] = float("nan")
-                row_dict[f"tw{j}"] = float("nan")
+                row_dict[f"c{j}"] = 0.0
+                row_dict[f"tw{j}"] = 4.0
         for j, d in enumerate(target_x_b, start=1):
             row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
             idx_behind = i_proj + int(round(d))
@@ -713,8 +702,8 @@ class NNDriverFramework:
                 row_dict[f"b_c{j}"] = track_data["curvatures_all"][idx_behind]
                 row_dict[f"b_tw{j}"] = track_data["track_widths_all"][idx_behind]["width"]
             else:
-                row_dict[f"b_c{j}"] = float("nan")
-                row_dict[f"b_tw{j}"] = float("nan")
+                row_dict[f"b_c{j}"] = 0.0
+                row_dict[f"b_tw{j}"] = 4.0
         row_dict["c0"] = c0
         row_dict["tw0"] = tw0
         return row_dict
@@ -896,7 +885,7 @@ class NNDriverFramework:
                 df_trans = self.transformer.transform(df_single)
                 predictions = self.nn_model.predict(df_trans)
                 st_pred, th_pred, br_pred = predictions[0]
-                message = f"{st_pred},{th_pred},{br_pred}\n"
+                message = f"{st_pred},{th_pred},{0}\n"
                 print(f"[Realtime] Sending: {message.strip()}")
                 client_socket.sendall(message.encode())
         except Exception as e:
@@ -1035,24 +1024,24 @@ class NNDriverFramework:
             front_pts = []
             for j in range(1, 21):
                 x_val = float(j)
-                z_val = frame.get(f"rel_z{j}", float("nan"))
+                z_val = frame.get(f"rel_z{j}", 0.0)
                 front_pts.append([x_val, z_val])
             front_scatter.set_offsets(np.array(front_pts))
 
             # behind local centerline
             behind_pts = []
             for j, x_val in enumerate(range(-5, 0), start=1):
-                z_val = frame.get(f"b_rel_z{j}", float("nan"))
+                z_val = frame.get(f"b_rel_z{j}", 0.0)
                 behind_pts.append([float(x_val), z_val])
             behind_scatter.set_offsets(np.array(behind_pts))
 
             # lines for front & behind
             cl_x_fwd = np.arange(1, 21)
-            cl_z_fwd = [frame.get(f"rel_z{k}", float("nan")) for k in range(1,21)]
+            cl_z_fwd = [frame.get(f"rel_z{k}", 0.0) for k in range(1,21)]
             centerline_line.set_data(cl_x_fwd, cl_z_fwd)
 
             cl_x_b = np.arange(-5, 0)
-            cl_z_b = [frame.get(f"b_rel_z{k}", float("nan")) for k in range(1,6)]
+            cl_z_b = [frame.get(f"b_rel_z{k}", 0.0) for k in range(1,6)]
             centerline_bline.set_data(cl_x_b, cl_z_b)
 
             # rays
@@ -1071,16 +1060,16 @@ class NNDriverFramework:
             # track width & curvature (front)
             tws, curvs = [], []
             for j in range(0, 21):
-                tws.append(frame.get(f"tw{j}", float("nan")))
-                curvs.append(frame.get(f"c{j}", float("nan")))
+                tws.append(frame.get(f"tw{j}", 0.0))
+                curvs.append(frame.get(f"c{j}", 0.0))
             track_width_line.set_data(range(21), tws)
             curvature_line.set_data(range(21), curvs)
 
             # behind
             btws, bcurvs = [], []
             for j in range(1, 6):
-                btws.append(frame.get(f"b_tw{j}", float("nan")))
-                bcurvs.append(frame.get(f"b_c{j}", float("nan")))
+                btws.append(frame.get(f"b_tw{j}", 0.0))
+                bcurvs.append(frame.get(f"b_c{j}", 0.0))
             local_xs_b = list(range(-5, 0))
             track_width_line_back.set_data(local_xs_b, btws)
             curvature_line_back.set_data(local_xs_b, bcurvs)
