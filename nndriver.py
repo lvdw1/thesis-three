@@ -84,13 +84,12 @@ def order_cones_by_centerline(cones, centerline_x, centerline_z):
 def create_track_edges(blue_cones, yellow_cones, centerline_x, centerline_z):
     ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
     ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
-    # close loops if not already
-    if ordered_blue and (np.hypot(ordered_blue[0][0] - ordered_blue[-1][0],
-                                  ordered_blue[0][1] - ordered_blue[-1][1]) > 1e-6):
+    
+    if ordered_blue:
         ordered_blue.append(ordered_blue[0])
-    if ordered_yellow and (np.hypot(ordered_yellow[0][0] - ordered_yellow[-1][0],
-                                    ordered_yellow[0][1] - ordered_yellow[-1][1]) > 1e-6):
+    if ordered_yellow:
         ordered_yellow.append(ordered_yellow[0])
+    
     return ordered_blue, ordered_yellow
 
 def read_csv_data(file_path):
@@ -133,9 +132,9 @@ def read_csv_data(file_path):
     }
 
 def shift_position_single(x, z, yaw_deg, shift_distance=-1.5):
-    yaw = math.radians(yaw_deg)
-    offset_x = shift_distance * math.sin(yaw)
-    offset_z = -shift_distance * math.cos(yaw)
+    yaw = np.radians(yaw_deg)
+    offset_x = shift_distance * np.sin(yaw)
+    offset_z = -shift_distance * np.cos(yaw)
     return x + offset_x, z + offset_z
 
 def find_projection_index(car_x, car_z, centerline_pts):
@@ -1089,6 +1088,164 @@ class NNDriverFramework:
             plt.pause(0.001)
         print("[NNDriverFramework] Finished frame-by-frame realtime visualization.")
 
+    def visualize_absolute_mode(self, csv_path, json_path):
+        """
+        Visualize absolute positions: Plot the car trajectory (from CSV) and the cones/centerline (from JSON)
+        in their absolute coordinate space.
+        """
+        # Read car data from CSV
+        data = read_csv_data(csv_path)
+        if data is None:
+            print("Could not load CSV data.")
+            return
+        # Extract absolute car positions
+        car_x = data["x_pos"]
+        car_z = data["z_pos"]
+        yaw_deg = data["yaw_angle"]
+
+        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=2.5)
+
+        # Read cone and centerline data from JSON
+        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 8))
+        # Plot car trajectory
+        ax.plot(x_shifted, z_shifted, 'k-', label="Car Trajectory")
+        # Mark start and end
+        ax.scatter(x_shifted[0], z_shifted[0], c='red', marker='o', s=100, label="Start")
+        ax.scatter(x_shifted[-1], z_shifted[-1], c='green', marker='o', s=100, label="End")
+
+        # Plot cones if available
+        if blue_cones:
+            bx, bz = zip(*blue_cones)
+            ax.scatter(bx, bz, c='blue', marker='o', label="Blue Cones")
+        if yellow_cones:
+            yx, yz = zip(*yellow_cones)
+            ax.scatter(yx, yz, c='gold', marker='o', label="Yellow Cones")
+        # Optionally, plot the track centerline if provided
+        if clx and clz:
+            ax.plot(clx, clz, 'm--', label="Centerline")
+
+        ax.set_xlabel("X Position (m)")
+        ax.set_ylabel("Z Position (m)")
+        ax.set_title("Absolute Positions: Car Trajectory & Cones")
+        ax.legend()
+        plt.show()
+
+    def visualize_realtime_absolute_mode(self, csv_path, json_path, heading_length=3.0):
+        """
+        Visualize in absolute coordinates with realtime animation:
+        - Plot the cones and track edges (from JSON)
+        - Animate the car driving through the scene using the shifted car positions
+          computed via process_realtime_frame.
+        """
+        # --- Build track data from JSON ---
+        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
+        # Use reversed centerline as before
+        clx_rev = clx[::-1]
+        clz_rev = clz[::-1]
+        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
+        centerline_pts = list(zip(r_clx, r_clz))
+        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
+        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
+        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
+        track_data = {
+             "r_clx": r_clx,
+             "r_clz": r_clz,
+             "centerline_pts": centerline_pts,
+             "ordered_blue": ordered_blue,
+             "ordered_yellow": ordered_yellow,
+             "curvatures_all": curvatures_all,
+             "track_widths_all": track_widths_all
+        }
+        
+        # --- Read CSV absolute car data ---
+        data = read_csv_data(csv_path)
+        if data is None:
+            print("Could not load CSV data.")
+            return
+        
+        # --- Prepare background plot: cones, track edges, and centerline ---
+        fig, ax = plt.subplots(figsize=(12,10))
+        # Plot cones
+        if blue_cones:
+            bx, bz = zip(*blue_cones)
+            ax.scatter(bx, bz, c='blue', marker='o', label="Blue Cones")
+        if yellow_cones:
+            yx, yz = zip(*yellow_cones)
+            ax.scatter(yx, yz, c='gold', marker='o', label="Yellow Cones")
+        # Plot track edges (from JSON—these are already absolute)
+        if ordered_blue:
+            blue_x, blue_z = zip(*ordered_blue)
+            ax.plot(blue_x, blue_z, 'b-', label="Blue Track Edge")
+        if ordered_yellow:
+            yellow_x, yellow_z = zip(*ordered_yellow)
+            ax.plot(yellow_x, yellow_z, 'y-', label="Yellow Track Edge")
+        # Optionally, plot the centerline from JSON
+        if clx and clz:
+            ax.plot(clx, clz, 'm--', label="Centerline")
+        
+        ax.set_xlabel("X Position (m)")
+        ax.set_ylabel("Z Position (m)")
+        ax.set_title("Realtime Absolute Visualization")
+        ax.legend()
+        
+        # --- Prepare markers for the car and its heading ---
+        car_marker, = ax.plot([], [], 'ro', markersize=10, label="Car")
+        heading_line, = ax.plot([], [], 'r-', lw=2, label="Heading")
+        
+        # --- Reset realtime state ---
+        self.last_time = None
+        self.last_vx = None
+        self.last_vy = None
+        
+        # --- Iterate over CSV rows to animate the car ---
+        t_arr = data["time"]
+        x_arr = data["x_pos"]
+        z_arr = data["z_pos"]
+        yaw_arr = data["yaw_angle"]
+        vx_arr = data["long_vel"]
+        vy_arr = data["lat_vel"]
+        yr_arr = data["yaw_rate"]
+        st_arr = data["steering"]
+        th_arr = data["throttle"]
+        br_arr = data["brake"]
+        
+        for i in range(len(t_arr)):
+            sensor_data = {
+                "time":     t_arr[i],
+                "x_pos":    x_arr[i],
+                "z_pos":    z_arr[i],
+                "yaw_deg":  yaw_arr[i],
+                "long_vel": vx_arr[i],
+                "lat_vel":  vy_arr[i],
+                "yaw_rate": yr_arr[i],
+                "steering": st_arr[i],
+                "throttle": th_arr[i],
+                "brake":    br_arr[i],
+            }
+            # Process the frame (this applies the usual shift via shift_position_single)
+            frame = self.process_realtime_frame(sensor_data, track_data)
+            # The shifted car position is in frame["x_pos"] and frame["z_pos"]
+            car_x = frame["x_pos"]
+            car_z = frame["z_pos"]
+            heading = frame["yaw_deg"]
+            heading_rad = math.radians(heading)
+            
+            # Update the car marker position
+            car_marker.set_data([car_x], [car_z])
+            # Compute the endpoint of the heading line
+            hx = car_x + heading_length * math.cos(heading_rad)
+            hz = car_z + heading_length * math.sin(heading_rad)
+            heading_line.set_data([car_x, hx], [car_z, hz])
+            
+            plt.draw()
+            plt.pause(0.01)
+        
+        print("[NNDriverFramework] Finished realtime absolute visualization.")
+        plt.show()
+
         # ---------------------------------------------------------------------
 # ------------------ MAIN ENTRY POINT ---------------------------------
 # ---------------------------------------------------------------------
@@ -1098,7 +1255,7 @@ def main():
     parser.add_argument("--mode", type=str, default="train",
                         help="train, infer, realtime, or visualize-realtime")
     parser.add_argument("--csv", type=str,
-                        help="Path to CSV file (for train, infer, visual, or visualize-realtime)")
+                        help="Path to CSV file (for train, infer, visual, or visualize-realtime or visualize-absolute)")
     parser.add_argument("--json", type=str, default="default.json",
                         help="Path to track JSON")
     parser.add_argument("--transformer", type=str, default="transformer.joblib",
@@ -1136,6 +1293,10 @@ def main():
             print("Must provide --csv for 'visualize-realtime'.")
             return
         framework.visual_realtime_mode(csv_path=args.csv, json_path=args.json)
+    elif mode == "visualize-absolute":
+        framework.visualize_absolute_mode(csv_path=args.csv, json_path=args.json)
+    elif mode == 'visualize-realtime-absolute':
+        framework.visualize_realtime_absolute_mode(csv_path=args.csv, json_path=args.json)
     else:
         print("Unknown mode. Use --mode train, infer, realtime, or visualize-realtime.")
 
