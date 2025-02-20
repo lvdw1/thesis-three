@@ -973,12 +973,12 @@ class NNDriverFramework:
         ax_bottom.set_ylim(0, 10)
 
         track_width_line, = ax_bottom.plot([], [], 'bo-', label='Fwd Track Width')
-        track_width_line_back, = ax_bottom.plot([], [], 'go-', label='Back Track Width')
+        track_width_line_back, = ax_bottom.plot([], [], 'bo-')
         ax_bottom.legend(loc='upper left')
 
         ax_curv = ax_bottom.twinx()
         curvature_line, = ax_curv.plot([], [], 'r.-', label='Fwd Curvature')
-        curvature_line_back, = ax_curv.plot([], [], 'm.-', label='Back Curvature')
+        curvature_line_back, = ax_curv.plot([], [], 'r.-')
         ax_curv.set_ylim(-0.5, 0.5)
         ax_curv.legend(loc='upper right')
         # ----------------------------------------------------------------------
@@ -1162,17 +1162,16 @@ class NNDriverFramework:
         # We'll update these plots in the loop.
 
                 # Create persistent line objects for front centerline and track width
-        front_centerline_line, = ax_bottom.plot([], [], 'm.-', label="Front Centerline")
-        f_track_line, = ax_bottom.plot([], [], 'bo-', label="Fwd Track Width")
-        back_centerline_line, = ax_bottom.plot([], [], 'g.-', label="Back Centerline")
-        b_track_line, = ax_bottom.plot([], [], 'go-', label="Back Track Width")
+        f_track_line, = ax_bottom.plot([], [], 'bo-', label="Track Width")
+        back_centerline_line, = ax_bottom.plot([], [], 'm.-')
+        b_track_line, = ax_bottom.plot([], [], 'bo-')
         ax_bottom.legend(loc='upper left')
 
 # Create twin axis for curvature metrics
         ax_curv_bottom = ax_bottom.twinx()
         ax_curv_bottom.set_ylim(-0.5, 0.5)
-        f_curv_line, = ax_curv_bottom.plot([], [], 'r.-', label="Fwd Curvature")
-        b_curv_line, = ax_curv_bottom.plot([], [], 'm.-', label="Back Curvature")
+        f_curv_line, = ax_curv_bottom.plot([], [], 'r.-', label="Curvature")
+        b_curv_line, = ax_curv_bottom.plot([], [], 'r.-')
         ax_curv_bottom.legend(loc='upper right')
         
         # --- Reset realtime state ---
