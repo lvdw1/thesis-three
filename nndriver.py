@@ -32,8 +32,109 @@ from sklearn.metrics import mean_squared_error
 from sklearn.neural_network import MLPRegressor
 
 # ---------------------------------------------------------------------
-# ------------------ UTILITY / POSTPROCESSING CODE --------------------
+# ------------------ UTILITY / POSTPROCESSING CODE -------------------wr
 # ---------------------------------------------------------------------
+
+def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_points,
+                                              front_distance=20.0, behind_distance=5.0):
+    """
+    Given a list of resampled (global) centerline points (as (x,z) tuples),
+    this function computes the cumulative arc length along the centerline, finds
+    the projection point (the one closest to the car), and then selects (or
+    interpolates) points exactly front_distance ahead and behind_distance behind
+    along the centerline.
+    
+    It returns:
+      - front_local: list of points (x_local, z_local, curvature) for points ahead,
+                     where x_local is forced to be the arc-length offset (so the
+                     20th point appears at x = 20).
+      - behind_local: list of points (x_local, z_local, curvature) for points behind,
+      - global_front: corresponding global (x,z) points ahead (for plotting)
+      - global_behind: corresponding global (x,z) points behind (for plotting)
+    
+    The local coordinates are computed such that:
+      x_local = (arc length from projection)   and 
+      z_local = signed lateral offset (computed as usual).
+    """
+    pts = np.array(centerline_points)  # shape (N,2)
+    cum_dist = np.array(compute_centerline_cumulative_distance(pts[:, 0].tolist(),
+                                                               pts[:, 1].tolist()))
+    N = len(pts)
+    
+    # Find the index of the centerline point closest to the car.
+    dists = np.hypot(pts[:, 0] - car_x, pts[:, 1] - car_z)
+    i_proj = int(np.argmin(dists))
+    L_proj = cum_dist[i_proj]
+    
+    # Define target arc-lengths for front and behind.
+    L_front_target = L_proj + front_distance
+    L_behind_target = L_proj - behind_distance
+
+    def interpolate_point(target_L):
+        # If target_L is outside the available range, clamp it.
+        if target_L <= cum_dist[0]:
+            return pts[0]
+        if target_L >= cum_dist[-1]:
+            return pts[-1]
+        idx = np.searchsorted(cum_dist, target_L)
+        L1, L2 = cum_dist[idx - 1], cum_dist[idx]
+        p1, p2 = pts[idx - 1], pts[idx]
+        ratio = (target_L - L1) / (L2 - L1)
+        return p1 + ratio * (p2 - p1)
+    
+    global_front_pt = interpolate_point(L_front_target)
+    global_behind_pt = interpolate_point(L_behind_target)
+    
+    # Select points between the projection point and the target arc lengths.
+    front_mask = (cum_dist >= L_proj) & (cum_dist <= L_front_target)
+    behind_mask = (cum_dist >= L_behind_target) & (cum_dist <= L_proj)
+    
+    global_front = pts[front_mask].tolist()
+    global_behind = pts[behind_mask].tolist()
+    
+    # Append (or insert) the interpolated endpoint(s) if needed.
+    if len(global_front) == 0 or np.hypot(*(np.array(global_front[-1]) - global_front_pt)) > 1e-3:
+        global_front.append(global_front_pt.tolist())
+    if len(global_behind) == 0 or np.hypot(*(np.array(global_behind[0]) - global_behind_pt)) > 1e-3:
+        global_behind.insert(0, global_behind_pt.tolist())
+    
+    # Now, instead of using the standard global-to-local transform, we force the x-coordinate
+    # (longitudinal direction) to be the arc-length offset (i.e. 0, 1, 2, ... m).
+    # The lateral (z_local) coordinate is still computed as the signed perpendicular distance.
+    front_local = []
+    indices_front = np.where(front_mask)[0]
+    for idx in indices_front:
+        p = pts[idx]
+        arc_offset = cum_dist[idx] - L_proj  # this will be in meters
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        front_local.append((arc_offset, lateral, 0))
+    # Append the interpolated endpoint if it wasn’t in the original mask.
+    if len(global_front) > len(indices_front):
+        p = np.array(global_front_pt)
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        front_local.append((front_distance, lateral, 0))
+    
+    behind_local = []
+    indices_behind = np.where(behind_mask)[0]
+    for idx in indices_behind:
+        p = pts[idx]
+        arc_offset = cum_dist[idx] - L_proj  # will be negative
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        behind_local.append((arc_offset, lateral, 0))
+    if len(global_behind) > len(indices_behind):
+        p = np.array(global_behind_pt)
+        dx = p[0] - car_x
+        dz = p[1] - car_z
+        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+        behind_local.insert(0, (-behind_distance, lateral, 0))
+    
+    return front_local, behind_local, global_front, global_behind
 
 def compute_centerline_cumulative_distance(centerline_x, centerline_z):
     cum_dist = [0.0]
@@ -590,122 +691,121 @@ class NNDriverFramework:
             frames.append(frame)
         return pd.DataFrame(frames)
 
-
     def process_realtime_frame(self, sensor_data, track_data):
-        """
-        For each new sensor reading (car_x, car_z, yaw, velocities,...),
-        compute the same features used for training.
-        """
-        t = sensor_data["time"]
-        car_x = sensor_data["x_pos"]
-        car_z = sensor_data["z_pos"]
-        yaw_deg = sensor_data["yaw_deg"]
-        long_vel = sensor_data["long_vel"]
-        lat_vel = sensor_data["lat_vel"]
-        yaw_rate = sensor_data["yaw_rate"]
-        steering = sensor_data["steering"]
-        throttle = sensor_data["throttle"]
-        brake = sensor_data["brake"]
+            """
+            For each new sensor reading (car_x, car_z, yaw, velocities,...),
+            compute the same features used for training.
+            """
+            t = sensor_data["time"]
+            car_x = sensor_data["x_pos"]
+            car_z = sensor_data["z_pos"]
+            yaw_deg = sensor_data["yaw_deg"]
+            long_vel = sensor_data["long_vel"]
+            lat_vel = sensor_data["lat_vel"]
+            yaw_rate = sensor_data["yaw_rate"]
+            steering = sensor_data["steering"]
+            throttle = sensor_data["throttle"]
+            brake = sensor_data["brake"]
 
-        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=2.5)
-        # compute local acceleration from last frame
-        if self.last_time is None or self.last_vx is None or self.last_vy is None:
-            ax, ay = 0.0, 0.0
-        else:
-            time_arr = np.array([self.last_time, t])
-            vx_arr = np.array([self.last_vx, long_vel])
-            vy_arr = np.array([self.last_vy, lat_vel])
-            ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
-            ax, ay = ax_arr[0], ay_arr[0]
-        self.last_time = t
-        self.last_vx = long_vel
-        self.last_vy = lat_vel
-
-        yaw_rad = math.radians(yaw_deg)
-        yrd, brd = raycast_for_state(x_shifted, z_shifted, yaw_rad,
-                                     track_data["ordered_blue"],
-                                     track_data["ordered_yellow"],
-                                     max_distance=20.0)
-        dc = compute_signed_distance_to_centerline(x_shifted, z_shifted,
-                                                   track_data["r_clx"],
-                                                   track_data["r_clz"])
-        dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad,
-                                        track_data["r_clx"], track_data["r_clz"])
-        dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in track_data["centerline_pts"]]
-        i_proj = int(np.argmin(dists))
-        if i_proj < len(track_data["r_clx"]):
-            c0 = track_data["curvatures_all"][i_proj]
-            tw0 = track_data["track_widths_all"][i_proj]["width"]
-        else:
-            c0 = 0.0
-            tw0 = 4
-
-        front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
-            x_shifted, z_shifted, yaw_rad, track_data["centerline_pts"],
-            front_distance=20.0, behind_distance=5.0
-        )
-        if len(front_local) > 0:
-            fl = np.array(front_local)
-            x_front = fl[:,0]
-            z_front = fl[:,1]
-            target_x = np.arange(1,21)
-            target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
-        else:
-            target_x = np.arange(1,21)
-            target_z = np.full(20, 0)
-        if len(behind_local) > 0:
-            bl = np.array(behind_local)
-            x_behind = bl[:,0]
-            z_behind = bl[:,1]
-            target_x_b = np.arange(-5,0)
-            target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
-        else:
-            target_x_b = np.arange(-5,0)
-            target_z_b = np.full(5, 0)
-
-        row_dict = {
-            "time": t,
-            "x_pos": x_shifted,
-            "z_pos": z_shifted,
-            "yaw_deg": yaw_deg,
-            "long_vel": long_vel,
-            "lat_vel": lat_vel,
-            "yaw_rate": yaw_rate,
-            "steering": steering,
-            "throttle": throttle,
-            "brake": brake,
-            "ax": ax,
-            "ay": ay,
-            "dist_center": -dc,
-            "head_diff": dh,
-            "track_width": tw0,
-            "curvature": c0,
-        }
-        for idx, dist_val in enumerate(yrd, start=1):
-            row_dict[f"yr{idx}"] = dist_val
-        for idx, dist_val in enumerate(brd, start=1):
-            row_dict[f"br{idx}"] = dist_val
-        for j, d in enumerate(target_x, start=1):
-            row_dict[f"rel_z{j}"] = target_z[j-1]
-            idx_front = i_proj + int(round(d))
-            if idx_front < len(track_data["r_clx"]):
-                row_dict[f"c{j}"] = track_data["curvatures_all"][idx_front]
-                row_dict[f"tw{j}"] = track_data["track_widths_all"][idx_front]["width"]
+            x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=2.5)
+            # compute local acceleration from last frame
+            if self.last_time is None or self.last_vx is None or self.last_vy is None:
+                ax, ay = 0.0, 0.0
             else:
-                row_dict[f"c{j}"] = 0.0
-                row_dict[f"tw{j}"] = 4.0
-        for j, d in enumerate(target_x_b, start=1):
-            row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
-            idx_behind = i_proj + int(round(d))
-            if 0 <= idx_behind < len(track_data["r_clx"]):
-                row_dict[f"b_c{j}"] = track_data["curvatures_all"][idx_behind]
-                row_dict[f"b_tw{j}"] = track_data["track_widths_all"][idx_behind]["width"]
+                time_arr = np.array([self.last_time, t])
+                vx_arr = np.array([self.last_vx, long_vel])
+                vy_arr = np.array([self.last_vy, lat_vel])
+                ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
+                ax, ay = ax_arr[0], ay_arr[0]
+            self.last_time = t
+            self.last_vx = long_vel
+            self.last_vy = lat_vel
+
+            yaw_rad = math.radians(yaw_deg)
+            yrd, brd = raycast_for_state(x_shifted, z_shifted, yaw_rad,
+                                         track_data["ordered_blue"],
+                                         track_data["ordered_yellow"],
+                                         max_distance=20.0)
+            dc = compute_signed_distance_to_centerline(x_shifted, z_shifted,
+                                                       track_data["r_clx"],
+                                                       track_data["r_clz"])
+            dh = compute_heading_difference(x_shifted, z_shifted, yaw_rad,
+                                            track_data["r_clx"], track_data["r_clz"])
+            dists = [math.hypot(px - car_x, pz - car_z) for (px, pz) in track_data["centerline_pts"]]
+            i_proj = int(np.argmin(dists))
+            if i_proj < len(track_data["r_clx"]):
+                c0 = track_data["curvatures_all"][i_proj]
+                tw0 = track_data["track_widths_all"][i_proj]["width"]
             else:
-                row_dict[f"b_c{j}"] = 0.0
-                row_dict[f"b_tw{j}"] = 4.0
-        row_dict["c0"] = c0
-        row_dict["tw0"] = tw0
-        return row_dict
+                c0 = 0.0
+                tw0 = 4
+
+            front_local, behind_local, _, _ = get_local_centerline_points_by_distance(
+                x_shifted, z_shifted, yaw_rad, track_data["centerline_pts"],
+                front_distance=20.0, behind_distance=5.0
+            )
+            if len(front_local) > 0:
+                fl = np.array(front_local)
+                x_front = fl[:,0]
+                z_front = fl[:,1]
+                target_x = np.arange(1,21)
+                target_z = np.interp(target_x, x_front, z_front, left=z_front[0], right=z_front[-1])
+            else:
+                target_x = np.arange(1,21)
+                target_z = np.full(20, 0)
+            if len(behind_local) > 0:
+                bl = np.array(behind_local)
+                x_behind = bl[:,0]
+                z_behind = bl[:,1]
+                target_x_b = np.arange(-5,0)
+                target_z_b = np.interp(target_x_b, x_behind, z_behind, left=z_behind[0], right=z_behind[-1])
+            else:
+                target_x_b = np.arange(-5,0)
+                target_z_b = np.full(5, 0)
+
+            row_dict = {
+                "time": t,
+                "x_pos": x_shifted,
+                "z_pos": z_shifted,
+                "yaw_deg": yaw_deg,
+                "long_vel": long_vel,
+                "lat_vel": lat_vel,
+                "yaw_rate": yaw_rate,
+                "steering": steering,
+                "throttle": throttle,
+                "brake": brake,
+                "ax": ax,
+                "ay": ay,
+                "dist_center": -dc,
+                "head_diff": dh,
+                "track_width": tw0,
+                "curvature": c0,
+            }
+            for idx, dist_val in enumerate(yrd, start=1):
+                row_dict[f"yr{idx}"] = dist_val
+            for idx, dist_val in enumerate(brd, start=1):
+                row_dict[f"br{idx}"] = dist_val
+            for j, d in enumerate(target_x, start=1):
+                row_dict[f"rel_z{j}"] = target_z[j-1]
+                idx_front = i_proj + int(round(d))
+                if idx_front < len(track_data["r_clx"]):
+                    row_dict[f"c{j}"] = track_data["curvatures_all"][idx_front]
+                    row_dict[f"tw{j}"] = track_data["track_widths_all"][idx_front]["width"]
+                else:
+                    row_dict[f"c{j}"] = 0.0
+                    row_dict[f"tw{j}"] = 4.0
+            for j, d in enumerate(target_x_b, start=1):
+                row_dict[f"b_rel_z{j}"] = target_z_b[j-1]
+                idx_behind = i_proj + int(round(d))
+                if 0 <= idx_behind < len(track_data["r_clx"]):
+                    row_dict[f"b_c{j}"] = track_data["curvatures_all"][idx_behind]
+                    row_dict[f"b_tw{j}"] = track_data["track_widths_all"][idx_behind]["width"]
+                else:
+                    row_dict[f"b_c{j}"] = 0.0
+                    row_dict[f"b_tw{j}"] = 4.0
+            row_dict["c0"] = c0
+            row_dict["tw0"] = tw0
+            return row_dict
 
     def train_mode(self, csv_path, json_path, output_csv_path=None,
                    pca_variance=0.99, test_split=0.2):
@@ -1092,14 +1192,20 @@ class NNDriverFramework:
         """
         Visualize in absolute coordinates with realtime animation:
           - Top panel: Plot cones, track edges, and centerline (from JSON) and animate the car (shifted position)
-            with cast rays (transformed to absolute coordinates) and overlay the 20 forward and 5 behind local centerline points.
-          - Bottom panel: Plot the local metrics (local centerline, track width & curvature) as in the relative plot.
+            with cast rays (transformed to absolute coordinates) and overlay the forward and behind local points.
+          - The key fix is that the local x-coordinates (arc offsets) are used relative to the car’s projection
+            onto the centerline, so the local x-axis now follows the centerline rather than being fixed to the car.
+          - Bottom panel: Plot the local metrics (local centerline, track width & curvature) as before.
         """
         # --- Build track data from JSON ---
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
         clx_rev = clx[::-1]
         clz_rev = clz[::-1]
         r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
+        clx, clz = resample_centerline(clx, clz, resolution=1.0)
+
+        centerline_pts_fw = list(zip(clx,clz))
+
         centerline_pts = list(zip(r_clx, r_clz))
         ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
         curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
@@ -1124,7 +1230,7 @@ class NNDriverFramework:
         fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(12,10), gridspec_kw={'height_ratios':[3,1]})
         fig.subplots_adjust(right=0.7)
         
-        # Top panel: Background: cones, track edges, centerline
+        # Top panel: Plot cones, track edges, and centerline.
         if blue_cones:
             bx, bz = zip(*blue_cones)
             ax_top.scatter(bx, bz, c='blue', marker='o', label="Blue Cones")
@@ -1144,30 +1250,30 @@ class NNDriverFramework:
         ax_top.set_title("Absolute Scene with Cast Rays & Local Points")
         ax_top.legend()
         
-        # Persistent markers for car and heading on top panel.
+        # Persistent markers for car and heading.
         car_marker, = ax_top.plot([], [], 'ro', markersize=10, label="Car")
         heading_line, = ax_top.plot([], [], 'r-', lw=2, label="Heading")
-        # Persistent line objects for cast rays.
+        
+        # Persistent lines for cast rays.
         yellow_angles = np.deg2rad(np.arange(-20, 111, 10))
         blue_angles = np.deg2rad(np.arange(20, -111, -10))
         yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0]
                              for _ in range(len(yellow_angles))]
         blue_ray_lines = [ax_top.plot([], [], color='cyan', linestyle='--', lw=1)[0]
                              for _ in range(len(blue_angles))]
-        # Create persistent scatter objects for local centerline points (transformed to absolute)
-        forward_scatter = ax_top.scatter([], [], c='magenta', marker='x', s=50, label="Forward Local Points")
-        behind_scatter = ax_top.scatter([], [], c='green', marker='x', s=50, label="Behind Local Points")
+        
+        # Scatter objects for local centerline points (transformed to absolute).
+        front_scatter = ax_top.scatter([], [], c='magenta', marker='o', s=50, label="Forward Local Points")
+        behind_scatter = ax_top.scatter([], [], c='green', marker='o', s=50, label="Behind Local Points")
         ax_top.legend()
 
-        # Bottom panel: Setup for relative metrics (local centerline, track width & curvature)
+        # Bottom panel: Relative metrics.
         ax_bottom.set_title("Local Metrics: Centerline, Track Width & Curvature")
         ax_bottom.set_xlabel("Local X (m)")
         ax_bottom.set_ylabel("Track Width (m)")
         ax_bottom.set_xlim(-5, 21)
         ax_bottom.set_ylim(0, 10)
-        # Create persistent line objects for bottom panel.
         f_track_line, = ax_bottom.plot([], [], 'bo-', label="Track Width")
-        # We'll assume front centerline points are simply the "rel_z" values plotted against 1..20
         b_track_line, = ax_bottom.plot([], [], 'bo-')
         ax_bottom.legend(loc='upper left')
         
@@ -1177,12 +1283,12 @@ class NNDriverFramework:
         b_curv_line, = ax_curv_bottom.plot([], [], 'r.-')
         ax_curv_bottom.legend(loc='upper right')
         
-        # --- Reset realtime state ---
+        # Reset realtime state.
         self.last_time = None
         self.last_vx = None
         self.last_vy = None
 
-        # --- Iterate through CSV rows to animate ---
+        # Iterate through CSV rows.
         t_arr = data["time"]
         x_arr = data["x_pos"]
         z_arr = data["z_pos"]
@@ -1207,19 +1313,40 @@ class NNDriverFramework:
                 "throttle": th_arr[i],
                 "brake":    br_arr[i],
             }
-            # Process the frame (this applies the usual shift)
+            # Process the frame (computes local features, including real arc offsets).
             frame = self.process_realtime_frame(sensor_data, track_data)
             
             # --- Top Panel Update: Absolute view ---
+            # For proper visualization, we now want the local (arc) coordinate system to be anchored
+             # --- Top Panel Update: Absolute view ---
             car_x = frame["x_pos"]
             car_z = frame["z_pos"]
             heading_deg = frame["yaw_deg"]
             heading_rad = math.radians(heading_deg)
+
+# Compute the projection of the car onto the centerline.
+            dists = [math.hypot(pt[0]-car_x, pt[1]-car_z) for pt in track_data["centerline_pts"]]
+            i_proj = int(np.argmin(dists))
+            proj_point = track_data["centerline_pts"][i_proj]
+# Compute a local tangent at the projection point.
+            if i_proj == 0:
+                dx = track_data["centerline_pts"][1][0] - track_data["centerline_pts"][0][0]
+                dy = track_data["centerline_pts"][1][1] - track_data["centerline_pts"][0][1]
+            elif i_proj == len(track_data["centerline_pts"]) - 1:
+                dx = track_data["centerline_pts"][-1][0] - track_data["centerline_pts"][-2][0]
+                dy = track_data["centerline_pts"][-1][1] - track_data["centerline_pts"][-2][1]
+            else:
+                dx = track_data["centerline_pts"][i_proj+1][0] - track_data["centerline_pts"][i_proj-1][0]
+                dy = track_data["centerline_pts"][i_proj+1][1] - track_data["centerline_pts"][i_proj-1][1]
+            tangent_angle = math.atan2(dy, dx)
+
+# Update car marker and heading line.
             car_marker.set_data([car_x], [car_z])
             hx = car_x + heading_length * math.cos(heading_rad)
-            hz = car_z + heading_length * math.sin(heading_rad)
-            heading_line.set_data([car_x, hx], [car_z, hz])
-            # Update cast rays (yellow)
+            hy = car_z + heading_length * math.sin(heading_rad)
+            heading_line.set_data([car_x, hx], [car_z, hy])
+
+# Update cast rays (code unchanged) ...
             for idx, angle in enumerate(yellow_angles, start=1):
                 ray_dist = frame.get(f"yr{idx}", 0)
                 local_x = ray_dist * math.cos(angle)
@@ -1227,7 +1354,6 @@ class NNDriverFramework:
                 abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
                 abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
                 yellow_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
-            # Update cast rays (blue)
             for idx, angle in enumerate(blue_angles, start=1):
                 ray_dist = frame.get(f"br{idx}", 0)
                 local_x = ray_dist * math.cos(angle)
@@ -1235,33 +1361,26 @@ class NNDriverFramework:
                 abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
                 abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
                 blue_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
-            # Update forward and behind local centerline points (transformed to absolute)
-            forward_points = []
-            for j in range(1, 21):
-                local_x = j  # arc offset for forward points
-                local_y = frame.get(f"rel_z{j}", 0.0)
-                abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
-                abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
-                forward_points.append([abs_x, abs_y])
-            behind_points = []
-            for j in range(1, 6):
-                local_x = -j  # arc offset for behind points
-                local_y = frame.get(f"b_rel_z{j}", 0.0)
-                abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
-                abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
-                behind_points.append([abs_x, abs_y])
-            forward_scatter.set_offsets(np.array(forward_points))
-            behind_scatter.set_offsets(np.array(behind_points))
-            
-            # --- Bottom Panel Update: Relative metrics ---
-            # Update persistent lines for front relative metrics
-            front_local_vals = [frame.get(f"rel_z{j}", 0.0) for j in range(1, 21)]
+
+# Visualize local centerline points on the track.
+            resampled_pts = centerline_pts_fw
+            front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
+                car_x, car_z, heading_deg, resampled_pts,
+                front_distance=5.0, behind_distance=20.0)
+            if global_front:
+                front_scatter.set_offsets(np.array(global_front))
+            else:
+                front_scatter.set_offsets(np.empty((0,2)))
+            if global_behind:
+                behind_scatter.set_offsets(np.array(global_behind))
+            else:
+                behind_scatter.set_offsets(np.empty((0,2)))
+
+            # --- Bottom Panel Update: Relative metrics (unchanged) ---
             f_tw = [frame.get(f"tw{j}", 0.0) for j in range(21)]
             f_curv = [frame.get(f"c{j}", 0.0) for j in range(21)]
             f_track_line.set_data(np.arange(21), f_tw)
             f_curv_line.set_data(np.arange(21), f_curv)
-            # Update persistent lines for behind relative metrics
-            back_local_vals = [frame.get(f"b_rel_z{j}", 0.0) for j in range(1, 6)]
             b_tw = [frame.get(f"b_tw{j}", 0.0) for j in range(1,6)]
             b_curv = [frame.get(f"b_c{j}", 0.0) for j in range(1,6)]
             b_track_line.set_data(np.array(list(range(-5,0))), b_tw)
@@ -1271,7 +1390,7 @@ class NNDriverFramework:
             plt.pause(0.01)
         print("[NNDriverFramework] Finished realtime absolute visualization.")
         plt.show()
-            # ---------------------------------------------------------------------
+                # ---------------------------------------------------------------------
 # ------------------ MAIN ENTRY POINT ---------------------------------
 # ---------------------------------------------------------------------
 

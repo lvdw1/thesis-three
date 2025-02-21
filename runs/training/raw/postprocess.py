@@ -656,206 +656,206 @@ def compute_accelerations(time, vx, vy):
     return ax, ay
 # --------------------- Animation Function ---------------------
 # LEGACY animation, used for debugging the csv writer and served as base for visualizer.py
-# def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
-#                 heading_length=3.0,
-#                 front_distance_thresh=20.0,
-#                 behind_distance_thresh=5.0,
-#                 max_ray_distance=20.0):
-#     """
-#     Creates an animation showing:
-#       - The track with cones and track edges.
-#       - A moving car with heading and raycasting.
-#       - Local centerline points (visualized on the track).
-#       - A bottom subplot showing both the track width (distance between yellow and blue edges)
-#         and the centerline curvature (1/R, with sign) for each resampled centerline point
-#         that lies within 5 m behind to 20 m ahead of the car's projection onto the centerline.
-#       - Two bar plots in the lower-right corner: one showing the instantaneous heading difference
-#         (car's heading minus track heading) and one showing the signed distance from the car to
-#         the centerline.
-#     """
-#     # Extract car data.
-#     t = car_data["time"]
-#     x_car = car_data["x_pos"]
-#     z_car = car_data["z_pos"]
-#     yaw_deg = car_data["yaw_angle"]
-#     yaw = np.deg2rad(yaw_deg)
-#
-#     # Create figure with two subplots (top and bottom).
-#     fig, (ax_track, ax_width) = plt.subplots(2, 1, figsize=(10, 10),
-#                                              gridspec_kw={'height_ratios': [3, 1]})
-#     
-#     # Adjust main subplots to leave space on the right for the bar plots.
-#     fig.subplots_adjust(right=0.7)
-#     
-#     # Add a new axes in the lower right for heading difference.
-#     ax_heading = fig.add_axes([0.75, 0.1, 0.1, 0.19])  # [left, bottom, width, height]
-#     ax_heading.set_title("Heading Diff (rad)")
-#     ax_heading.set_ylim(-1, 1)
-#     ax_heading.set_xticks([])
-#     heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
-#     
-#     # Add a new axes above the heading diff for the signed distance.
-#     ax_distance = fig.add_axes([0.88, 0.10, 0.1, 0.19])
-#     ax_distance.set_title("Distance to Centerline (m)")
-#     # Set y-axis limits as appropriate (e.g., -5 to 5 meters).
-#     ax_distance.set_ylim(-2, 2)
-#     ax_distance.set_xticks([])
-#     distance_bar = ax_distance.bar(0, 0, width=0.5, color='blue')
-#     
-#     # --- Setup track (top) axes ---
-#     ax_track.set_aspect('equal', adjustable='box')
-#     ax_track.set_title("Car Run with Rays & Track Edges")
-#     ax_track.set_xlabel("X")
-#     ax_track.set_ylabel("Z")
-#     
-#     if blue_cones:
-#         bx, bz = zip(*blue_cones)
-#         ax_track.scatter(bx, bz, c='blue', s=10, label='Blue Cones')
-#     if yellow_cones:
-#         yx, yz = zip(*yellow_cones)
-#         ax_track.scatter(yx, yz, c='gold', s=10, label='Yellow Cones')
-#     
-#     ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
-#     ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
-#     if ordered_blue:
-#         bx_order, bz_order = zip(*ordered_blue)
-#         ax_track.plot(bx_order, bz_order, 'b-', lw=2, label='Blue Track Edge')
-#     if ordered_yellow:
-#         yx_order, yz_order = zip(*ordered_yellow)
-#         ax_track.plot(yx_order, yz_order, color='gold', lw=2, label='Yellow Track Edge')
-#     
-#     # Initialize animated elements on the track.
-#     car_point, = ax_track.plot([], [], 'bo', ms=8, label='Car')
-#     heading_line, = ax_track.plot([], [], 'r-', lw=2, label='Heading')
-#     front_scatter = ax_track.scatter([], [], c='magenta', s=25, label='Front Centerline')
-#     behind_scatter = ax_track.scatter([], [], c='green', s=25, label='Behind Centerline')
-#     
-#     yellow_angles_deg = np.arange(-20, 111, 10)
-#     blue_angles_deg = np.arange(20, -111, -10)
-#     yellow_angles = np.deg2rad(yellow_angles_deg)
-#     blue_angles = np.deg2rad(blue_angles_deg)
-#     yellow_ray_lines = [ax_track.plot([], [], color='yellow', linestyle='--', lw=1)[0]
-#                         for _ in range(len(yellow_angles))]
-#     blue_ray_lines = [ax_track.plot([], [], color='cyan', linestyle='--', lw=1)[0]
-#                       for _ in range(len(blue_angles))]
-#     
-#     # --- Setup bottom axes for Track Width and Curvature ---
-#     ax_width.set_title("Track Width and Centerline Curvature vs. Local X")
-#     ax_width.set_xlabel("Local X (m)")
-#     ax_width.set_ylabel("Track Width (m)")
-#     ax_width.set_xlim(-5, 20)
-#     ax_width.set_ylim(0, 10)
-#     track_width_line, = ax_width.plot([], [], 'bo-', label='Track Width')
-#     
-#     # Create a twin y-axis for curvature.
-#     ax_curv = ax_width.twinx()
-#     ax_curv.set_ylabel("Curvature (1/m)")
-#     ax_curv.set_ylim(-1, 1)
-#     curvature_line, = ax_curv.plot([], [], 'r.-', label='Curvature (1/m)')
-#     
-#     # Combine legends from both axes on the bottom subplot.
-#     lines = [track_width_line, curvature_line]
-#     labels = [track_width_line.get_label(), curvature_line.get_label()]
-#     ax_width.legend(lines, labels, loc='upper right')
-#     
-#     # Precompute cumulative distances along the resampled centerline.
-#     cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
-#     centerline_pts = list(zip(centerline_x, centerline_z))
-#     pts_array = np.array(centerline_pts)
-#     
-#     # Precompute track widths.
-#     track_widths_all = compute_local_track_widths(centerline_x, centerline_z,
-#                                                   ordered_blue, ordered_yellow,
-#                                                   max_width=10.0)
-#     # Precompute the local curvature for each centerline point.
-#     curvatures_all = compute_local_curvature(centerline_x, centerline_z, window_size=5)
-#     
-#     def update(frame_idx):
-#         x_curr = x_car[frame_idx]
-#         z_curr = z_car[frame_idx]
-#         yaw_curr = yaw[frame_idx]
-#
-#         # Update car marker and heading.
-#         car_point.set_data([x_curr], [z_curr])
-#         x_heading = x_curr + heading_length * math.cos(yaw_curr)
-#         z_heading = z_curr + heading_length * math.sin(yaw_curr)
-#         heading_line.set_data([x_curr, x_heading], [z_curr, z_heading])
-#         
-#         # Visualize local centerline points on the track.
-#         resampled_pts = centerline_pts
-#         front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
-#             x_curr, z_curr, yaw_curr, resampled_pts,
-#             front_distance=5.0, behind_distance=20.0)
-#         if global_front:
-#             front_scatter.set_offsets(np.array(global_front))
-#         else:
-#             front_scatter.set_offsets(np.empty((0,2)))
-#         if global_behind:
-#             behind_scatter.set_offsets(np.array(global_behind))
-#         else:
-#             behind_scatter.set_offsets(np.empty((0,2)))
-#         
-#         # Raycasting for visualization.
-#         yellow_ray_dists, blue_ray_dists = raycast_for_state(
-#             x_curr, z_curr, yaw_curr, ordered_blue, ordered_yellow, max_distance=max_ray_distance)
-#         for i, d in enumerate(yellow_ray_dists):
-#             ray_angle = yaw_curr + yellow_angles[i]
-#             end_x = x_curr + d * math.cos(ray_angle)
-#             end_z = z_curr + d * math.sin(ray_angle)
-#             yellow_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
-#         for i, d in enumerate(blue_ray_dists):
-#             ray_angle = yaw_curr + blue_angles[i]
-#             end_x = x_curr + d * math.cos(ray_angle)
-#             end_z = z_curr + d * math.sin(ray_angle)
-#             blue_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
-#         
-#         # Update Track Width and Curvature Plot (Bottom Subplot).
-#         dists_to_car = np.hypot(pts_array[:, 0] - x_curr, pts_array[:, 1] - z_curr)
-#         i_proj = int(np.argmin(dists_to_car))
-#         L_proj = cum_dist[i_proj]
-#         
-#         local_offsets = []
-#         local_widths = []
-#         local_curvs = []
-#         for i in range(len(centerline_x)):
-#             offset = cum_dist[i] - L_proj
-#             if -5 <= offset <= 20:
-#                 local_offsets.append(offset)
-#                 local_widths.append(track_widths_all[i]["width"])
-#                 local_curvs.append(curvatures_all[i])
-#         
-#         track_width_line.set_data(local_offsets, local_widths)
-#         curvature_line.set_data(local_offsets, local_curvs)
-#         
-#         # --- Compute and Update Heading Difference Bar ---
-#         heading_diff = compute_heading_difference(x_curr, z_curr, yaw_curr, centerline_x, centerline_z)
-#         bar_rect = heading_bar[0]
-#         if heading_diff >= 0:
-#             bar_rect.set_y(0)
-#             bar_rect.set_height(heading_diff)
-#         else:
-#             bar_rect.set_y(heading_diff)
-#             bar_rect.set_height(-heading_diff)
-#         
-#         # --- Compute and Update Signed Distance Bar ---
-#         signed_distance = compute_signed_distance_to_centerline(x_curr, z_curr, centerline_x, centerline_z)
-#         dist_rect = distance_bar[0]
-#         # For the bar, set its y-position and height so that a positive signed_distance
-#         # makes the bar extend upward and a negative signed_distance extends downward.
-#         if signed_distance >= 0:
-#             dist_rect.set_y(0)
-#             dist_rect.set_height(signed_distance)
-#         else:
-#             dist_rect.set_y(signed_distance)
-#             dist_rect.set_height(-signed_distance)
-#         
-#         return (car_point, heading_line, front_scatter, behind_scatter,
-#                 *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line, 
-#                 bar_rect, dist_rect)
-#
-#     anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
-#     plt.show()
-#     return None
+def animate_run(blue_cones, yellow_cones, centerline_x, centerline_z, car_data,
+                heading_length=3.0,
+                front_distance_thresh=20.0,
+                behind_distance_thresh=5.0,
+                max_ray_distance=20.0):
+    """
+    Creates an animation showing:
+      - The track with cones and track edges.
+      - A moving car with heading and raycasting.
+      - Local centerline points (visualized on the track).
+      - A bottom subplot showing both the track width (distance between yellow and blue edges)
+        and the centerline curvature (1/R, with sign) for each resampled centerline point
+        that lies within 5 m behind to 20 m ahead of the car's projection onto the centerline.
+      - Two bar plots in the lower-right corner: one showing the instantaneous heading difference
+        (car's heading minus track heading) and one showing the signed distance from the car to
+        the centerline.
+    """
+    # Extract car data.
+    t = car_data["time"]
+    x_car = car_data["x_pos"]
+    z_car = car_data["z_pos"]
+    yaw_deg = car_data["yaw_angle"]
+    yaw = np.deg2rad(yaw_deg)
+
+    # Create figure with two subplots (top and bottom).
+    fig, (ax_track, ax_width) = plt.subplots(2, 1, figsize=(10, 10),
+                                             gridspec_kw={'height_ratios': [3, 1]})
+    
+    # Adjust main subplots to leave space on the right for the bar plots.
+    fig.subplots_adjust(right=0.7)
+    
+    # Add a new axes in the lower right for heading difference.
+    ax_heading = fig.add_axes([0.75, 0.1, 0.1, 0.19])  # [left, bottom, width, height]
+    ax_heading.set_title("Heading Diff (rad)")
+    ax_heading.set_ylim(-1, 1)
+    ax_heading.set_xticks([])
+    heading_bar = ax_heading.bar(0, 0, width=0.5, color='purple')
+    
+    # Add a new axes above the heading diff for the signed distance.
+    ax_distance = fig.add_axes([0.88, 0.10, 0.1, 0.19])
+    ax_distance.set_title("Distance to Centerline (m)")
+    # Set y-axis limits as appropriate (e.g., -5 to 5 meters).
+    ax_distance.set_ylim(-2, 2)
+    ax_distance.set_xticks([])
+    distance_bar = ax_distance.bar(0, 0, width=0.5, color='blue')
+    
+    # --- Setup track (top) axes ---
+    ax_track.set_aspect('equal', adjustable='box')
+    ax_track.set_title("Car Run with Rays & Track Edges")
+    ax_track.set_xlabel("X")
+    ax_track.set_ylabel("Z")
+    
+    if blue_cones:
+        bx, bz = zip(*blue_cones)
+        ax_track.scatter(bx, bz, c='blue', s=10, label='Blue Cones')
+    if yellow_cones:
+        yx, yz = zip(*yellow_cones)
+        ax_track.scatter(yx, yz, c='gold', s=10, label='Yellow Cones')
+    
+    ordered_blue = order_cones_by_centerline(blue_cones, centerline_x, centerline_z)
+    ordered_yellow = order_cones_by_centerline(yellow_cones, centerline_x, centerline_z)
+    if ordered_blue:
+        bx_order, bz_order = zip(*ordered_blue)
+        ax_track.plot(bx_order, bz_order, 'b-', lw=2, label='Blue Track Edge')
+    if ordered_yellow:
+        yx_order, yz_order = zip(*ordered_yellow)
+        ax_track.plot(yx_order, yz_order, color='gold', lw=2, label='Yellow Track Edge')
+    
+    # Initialize animated elements on the track.
+    car_point, = ax_track.plot([], [], 'bo', ms=8, label='Car')
+    heading_line, = ax_track.plot([], [], 'r-', lw=2, label='Heading')
+    front_scatter = ax_track.scatter([], [], c='magenta', s=25, label='Front Centerline')
+    behind_scatter = ax_track.scatter([], [], c='green', s=25, label='Behind Centerline')
+    
+    yellow_angles_deg = np.arange(-20, 111, 10)
+    blue_angles_deg = np.arange(20, -111, -10)
+    yellow_angles = np.deg2rad(yellow_angles_deg)
+    blue_angles = np.deg2rad(blue_angles_deg)
+    yellow_ray_lines = [ax_track.plot([], [], color='yellow', linestyle='--', lw=1)[0]
+                        for _ in range(len(yellow_angles))]
+    blue_ray_lines = [ax_track.plot([], [], color='cyan', linestyle='--', lw=1)[0]
+                      for _ in range(len(blue_angles))]
+    
+    # --- Setup bottom axes for Track Width and Curvature ---
+    ax_width.set_title("Track Width and Centerline Curvature vs. Local X")
+    ax_width.set_xlabel("Local X (m)")
+    ax_width.set_ylabel("Track Width (m)")
+    ax_width.set_xlim(-5, 20)
+    ax_width.set_ylim(0, 10)
+    track_width_line, = ax_width.plot([], [], 'bo-', label='Track Width')
+    
+    # Create a twin y-axis for curvature.
+    ax_curv = ax_width.twinx()
+    ax_curv.set_ylabel("Curvature (1/m)")
+    ax_curv.set_ylim(-1, 1)
+    curvature_line, = ax_curv.plot([], [], 'r.-', label='Curvature (1/m)')
+    
+    # Combine legends from both axes on the bottom subplot.
+    lines = [track_width_line, curvature_line]
+    labels = [track_width_line.get_label(), curvature_line.get_label()]
+    ax_width.legend(lines, labels, loc='upper right')
+    
+    # Precompute cumulative distances along the resampled centerline.
+    cum_dist = compute_centerline_cumulative_distance(centerline_x, centerline_z)
+    centerline_pts = list(zip(centerline_x, centerline_z))
+    pts_array = np.array(centerline_pts)
+    
+    # Precompute track widths.
+    track_widths_all = compute_local_track_widths(centerline_x, centerline_z,
+                                                  ordered_blue, ordered_yellow,
+                                                  max_width=10.0)
+    # Precompute the local curvature for each centerline point.
+    curvatures_all = compute_local_curvature(centerline_x, centerline_z, window_size=5)
+    
+    def update(frame_idx):
+        x_curr = x_car[frame_idx]
+        z_curr = z_car[frame_idx]
+        yaw_curr = yaw[frame_idx]
+
+        # Update car marker and heading.
+        car_point.set_data([x_curr], [z_curr])
+        x_heading = x_curr + heading_length * math.cos(yaw_curr)
+        z_heading = z_curr + heading_length * math.sin(yaw_curr)
+        heading_line.set_data([x_curr, x_heading], [z_curr, z_heading])
+        
+        # Visualize local centerline points on the track.
+        resampled_pts = centerline_pts
+        front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
+            x_curr, z_curr, yaw_curr, resampled_pts,
+            front_distance=5.0, behind_distance=20.0)
+        if global_front:
+            front_scatter.set_offsets(np.array(global_front))
+        else:
+            front_scatter.set_offsets(np.empty((0,2)))
+        if global_behind:
+            behind_scatter.set_offsets(np.array(global_behind))
+        else:
+            behind_scatter.set_offsets(np.empty((0,2)))
+        
+        # Raycasting for visualization.
+        yellow_ray_dists, blue_ray_dists = raycast_for_state(
+            x_curr, z_curr, yaw_curr, ordered_blue, ordered_yellow, max_distance=max_ray_distance)
+        for i, d in enumerate(yellow_ray_dists):
+            ray_angle = yaw_curr + yellow_angles[i]
+            end_x = x_curr + d * math.cos(ray_angle)
+            end_z = z_curr + d * math.sin(ray_angle)
+            yellow_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
+        for i, d in enumerate(blue_ray_dists):
+            ray_angle = yaw_curr + blue_angles[i]
+            end_x = x_curr + d * math.cos(ray_angle)
+            end_z = z_curr + d * math.sin(ray_angle)
+            blue_ray_lines[i].set_data([x_curr, end_x], [z_curr, end_z])
+        
+        # Update Track Width and Curvature Plot (Bottom Subplot).
+        dists_to_car = np.hypot(pts_array[:, 0] - x_curr, pts_array[:, 1] - z_curr)
+        i_proj = int(np.argmin(dists_to_car))
+        L_proj = cum_dist[i_proj]
+        
+        local_offsets = []
+        local_widths = []
+        local_curvs = []
+        for i in range(len(centerline_x)):
+            offset = cum_dist[i] - L_proj
+            if -5 <= offset <= 20:
+                local_offsets.append(offset)
+                local_widths.append(track_widths_all[i]["width"])
+                local_curvs.append(curvatures_all[i])
+        
+        track_width_line.set_data(local_offsets, local_widths)
+        curvature_line.set_data(local_offsets, local_curvs)
+        
+        # --- Compute and Update Heading Difference Bar ---
+        heading_diff = compute_heading_difference(x_curr, z_curr, yaw_curr, centerline_x, centerline_z)
+        bar_rect = heading_bar[0]
+        if heading_diff >= 0:
+            bar_rect.set_y(0)
+            bar_rect.set_height(heading_diff)
+        else:
+            bar_rect.set_y(heading_diff)
+            bar_rect.set_height(-heading_diff)
+        
+        # --- Compute and Update Signed Distance Bar ---
+        signed_distance = compute_signed_distance_to_centerline(x_curr, z_curr, centerline_x, centerline_z)
+        dist_rect = distance_bar[0]
+        # For the bar, set its y-position and height so that a positive signed_distance
+        # makes the bar extend upward and a negative signed_distance extends downward.
+        if signed_distance >= 0:
+            dist_rect.set_y(0)
+            dist_rect.set_height(signed_distance)
+        else:
+            dist_rect.set_y(signed_distance)
+            dist_rect.set_height(-signed_distance)
+        
+        return (car_point, heading_line, front_scatter, behind_scatter,
+                *yellow_ray_lines, *blue_ray_lines, track_width_line, curvature_line, 
+                bar_rect, dist_rect)
+
+    anim = animation.FuncAnimation(fig, update, frames=len(t), interval=20, blit=True)
+    plt.show()
+    return None
 
 # ----------- --------------------- Main Script ---------------------
 if __name__ == "__main__":
@@ -874,6 +874,8 @@ if __name__ == "__main__":
     
     # Resample the centerline at 1 m intervals.
     resampled_clx, resampled_clz = resample_centerline(clx, clz, resolution=1.0)
+    resampled_clx = resampled_clx[::-1]
+    resampled_clz = resampled_clz[::-1]
     centerline_pts = list(zip(resampled_clx, resampled_clz))
 
     # Get the ordered track edges (used for raycasting and track width computations).
@@ -884,6 +886,7 @@ if __name__ == "__main__":
     track_widths_all = compute_local_track_widths(resampled_clx, resampled_clz,
                                                   ordered_blue, ordered_yellow,
                                                   max_width=10.0)
+    animate_run(blue_cones, yellow_cones, resampled_clx, resampled_clz, data)
     
     # Prepare the output CSV with the required headers.
     output_filename = "../mid/session3/run1.csv"
@@ -992,7 +995,7 @@ if __name__ == "__main__":
             # Compute the signed distance to the centerline and heading difference.
             dc = compute_signed_distance_to_centerline(car_x, car_z, resampled_clx, resampled_clz)
             dh = compute_heading_difference(car_x, car_z, yaw_curr, resampled_clx, resampled_clz)
-            row["dc"] = -dc
+            row["dc"] = dc
             row["dh"] = dh
             
             # Append vehicle dynamics from the input CSV.
