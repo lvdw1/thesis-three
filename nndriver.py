@@ -1209,7 +1209,7 @@ class NNDriverFramework:
         ax_top.legend()
 
         # Bottom panel: Relative metrics.
-        ax_bottom.set_title("Local Metrics: Centerline, Track Width & Curvature")
+        ax_bottom.set_title("Local Metrics: Track Width & Curvature")
         ax_bottom.set_xlabel("Local X (m)")
         ax_bottom.set_ylabel("Track Width (m)")
         ax_bottom.set_xlim(-5, 21)
@@ -1301,7 +1301,7 @@ class NNDriverFramework:
             else:
                 behind_scatter.set_offsets(np.empty((0,2)))
 
-            # --- Bottom Panel Update: Relative metrics (unchanged) ---
+            # --- Bottom Panel Update: Relative metrics ---
             f_tw = [frame.get(f"tw{j}", 0.0) for j in range(21)]
             f_curv = [frame.get(f"c{j}", 0.0) for j in range(21)]
             f_track_line.set_data(np.arange(21), f_tw)
@@ -1362,8 +1362,6 @@ def main():
             print("Must provide --csv for 'visualize-realtime'.")
             return
         framework.visual_realtime_mode(csv_path=args.csv, json_path=args.json)
-    elif mode == "visualize-absolute":
-        framework.visualize_absolute_mode(csv_path=args.csv, json_path=args.json)
     elif mode == 'visualize-realtime-absolute':
         framework.visualize_realtime_absolute_mode(csv_path=args.csv, json_path=args.json)
     else:
