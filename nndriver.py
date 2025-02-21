@@ -32,110 +32,124 @@ from sklearn.metrics import mean_squared_error
 from sklearn.neural_network import MLPRegressor
 
 # ---------------------------------------------------------------------
-# ------------------ UTILITY / POSTPROCESSING CODE -------------------wr
+# ------------------ UTILITY / POSTPROCESSING CODE --------------------
 # ---------------------------------------------------------------------
 
 def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_points,
                                               front_distance=20.0, behind_distance=5.0):
     """
-    Given a list of resampled (global) centerline points (as (x,z) tuples),
-    this function computes the cumulative arc length along the centerline, finds
-    the projection point (the one closest to the car), and then selects (or
-    interpolates) points exactly front_distance ahead and behind_distance behind
-    along the centerline.
+    Given a list of resampled (global) centerline points (as (x,z) tuples) for a circular track,
+    compute the cumulative arc length along the centerline and find the projection point (closest
+    to the car). Then, select or interpolate points exactly front_distance ahead and behind_distance
+    behind along the centerline, wrapping around if necessary.
     
-    It returns:
-      - front_local: list of points (x_local, z_local, curvature) for points ahead,
-                     where x_local is forced to be the arc-length offset (so the
-                     20th point appears at x = 20).
-      - behind_local: list of points (x_local, z_local, curvature) for points behind,
-      - global_front: corresponding global (x,z) points ahead (for plotting)
-      - global_behind: corresponding global (x,z) points behind (for plotting)
+    Returns:
+      - front_local: list of tuples (arc_offset, lateral, dummy) for points ahead.
+      - behind_local: list of tuples (arc_offset, lateral, dummy) for points behind.
+      - global_front: corresponding global (x,z) points for forward local points.
+      - global_behind: corresponding global (x,z) points for backward local points.
     
-    The local coordinates are computed such that:
-      x_local = (arc length from projection)   and 
-      z_local = signed lateral offset (computed as usual).
+    The local coordinates are defined relative to the projection point on the centerline:
+      x_local = (arc length from projection, with wrap-around)
+      z_local = signed lateral offset.
     """
     pts = np.array(centerline_points)  # shape (N,2)
     cum_dist = np.array(compute_centerline_cumulative_distance(pts[:, 0].tolist(),
                                                                pts[:, 1].tolist()))
+    T = cum_dist[-1]  # total track length
     N = len(pts)
     
-    # Find the index of the centerline point closest to the car.
-    dists = np.hypot(pts[:, 0] - car_x, pts[:, 1] - car_z)
+    # Find the projection index and its cumulative distance.
+    dists = np.hypot(pts[:,0] - car_x, pts[:,1] - car_z)
     i_proj = int(np.argmin(dists))
     L_proj = cum_dist[i_proj]
     
-    # Define target arc-lengths for front and behind.
+    # Compute target arc distances (wrap if necessary).
     L_front_target = L_proj + front_distance
+    if L_front_target > T:
+        L_front_target_wrapped = L_front_target - T
+    else:
+        L_front_target_wrapped = None  # no wrapping needed
+    
     L_behind_target = L_proj - behind_distance
+    if L_behind_target < 0:
+        L_behind_target_wrapped = L_behind_target + T
+    else:
+        L_behind_target_wrapped = None  # no wrapping needed
 
-    def interpolate_point(target_L):
-        # If target_L is outside the available range, clamp it.
-        if target_L <= cum_dist[0]:
-            return pts[0]
-        if target_L >= cum_dist[-1]:
-            return pts[-1]
-        idx = np.searchsorted(cum_dist, target_L)
-        L1, L2 = cum_dist[idx - 1], cum_dist[idx]
-        p1, p2 = pts[idx - 1], pts[idx]
+    # Function to interpolate a point given a target arc length.
+    def interpolate_point(target_L, cum, pts_array):
+        if target_L <= cum[0]:
+            return pts_array[0]
+        if target_L >= cum[-1]:
+            return pts_array[-1]
+        idx = np.searchsorted(cum, target_L)
+        L1, L2 = cum[idx-1], cum[idx]
+        p1, p2 = pts_array[idx-1], pts_array[idx]
         ratio = (target_L - L1) / (L2 - L1)
         return p1 + ratio * (p2 - p1)
     
-    global_front_pt = interpolate_point(L_front_target)
-    global_behind_pt = interpolate_point(L_behind_target)
-    
-    # Select points between the projection point and the target arc lengths.
-    front_mask = (cum_dist >= L_proj) & (cum_dist <= L_front_target)
-    behind_mask = (cum_dist >= L_behind_target) & (cum_dist <= L_proj)
-    
-    global_front = pts[front_mask].tolist()
-    global_behind = pts[behind_mask].tolist()
-    
-    # Append (or insert) the interpolated endpoint(s) if needed.
-    if len(global_front) == 0 or np.hypot(*(np.array(global_front[-1]) - global_front_pt)) > 1e-3:
-        global_front.append(global_front_pt.tolist())
-    if len(global_behind) == 0 or np.hypot(*(np.array(global_behind[0]) - global_behind_pt)) > 1e-3:
-        global_behind.insert(0, global_behind_pt.tolist())
-    
-    # Now, instead of using the standard global-to-local transform, we force the x-coordinate
-    # (longitudinal direction) to be the arc-length offset (i.e. 0, 1, 2, ... m).
-    # The lateral (z_local) coordinate is still computed as the signed perpendicular distance.
+    # Build forward points.
+    global_front = []
     front_local = []
-    indices_front = np.where(front_mask)[0]
-    for idx in indices_front:
-        p = pts[idx]
-        arc_offset = cum_dist[idx] - L_proj  # this will be in meters
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        front_local.append((arc_offset, lateral, 0))
-    # Append the interpolated endpoint if it wasn’t in the original mask.
-    if len(global_front) > len(indices_front):
-        p = np.array(global_front_pt)
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        front_local.append((front_distance, lateral, 0))
+    # First, take points from L_proj up to T.
+    front_mask1 = (cum_dist >= L_proj) & (cum_dist <= T)
+    if np.any(front_mask1):
+        pts_front1 = pts[front_mask1]
+        cum_front1 = cum_dist[front_mask1]
+        for i, p in zip(np.where(front_mask1)[0], pts_front1):
+            if cum_dist[i] <= L_front_target if L_front_target_wrapped is None else True:
+                arc_offset = cum_dist[i] - L_proj
+                dx = p[0] - car_x
+                dz = p[1] - car_z
+                lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+                global_front.append(p.tolist())
+                front_local.append((arc_offset, lateral, 0))
+    # If wrapping is needed, then take points from the beginning.
+    if L_front_target_wrapped is not None:
+        front_mask2 = (cum_dist >= 0) & (cum_dist <= L_front_target_wrapped)
+        if np.any(front_mask2):
+            pts_front2 = pts[front_mask2]
+            cum_front2 = cum_dist[front_mask2]
+            for i, p in zip(np.where(front_mask2)[0], pts_front2):
+                arc_offset = (cum_dist[i] + T) - L_proj  # add T to account for wrap
+                dx = p[0] - car_x
+                dz = p[1] - car_z
+                lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+                global_front.append(p.tolist())
+                front_local.append((arc_offset, lateral, 0))
     
+    # Build backward points.
+    global_behind = []
     behind_local = []
-    indices_behind = np.where(behind_mask)[0]
-    for idx in indices_behind:
-        p = pts[idx]
-        arc_offset = cum_dist[idx] - L_proj  # will be negative
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        behind_local.append((arc_offset, lateral, 0))
-    if len(global_behind) > len(indices_behind):
-        p = np.array(global_behind_pt)
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        behind_local.insert(0, (-behind_distance, lateral, 0))
+    # First, take points from 0 up to L_proj.
+    behind_mask1 = (cum_dist >= 0) & (cum_dist <= L_proj)
+    if np.any(behind_mask1):
+        pts_behind1 = pts[behind_mask1]
+        cum_behind1 = cum_dist[behind_mask1]
+        for i, p in zip(np.where(behind_mask1)[0], pts_behind1):
+            if cum_dist[i] >= L_behind_target if L_behind_target_wrapped is None else True:
+                arc_offset = cum_dist[i] - L_proj
+                dx = p[0] - car_x
+                dz = p[1] - car_z
+                lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+                global_behind.append(p.tolist())
+                behind_local.append((arc_offset, lateral, 0))
+    # If wrapping is needed, take points from the end.
+    if L_behind_target_wrapped is not None:
+        behind_mask2 = (cum_dist >= L_behind_target_wrapped) & (cum_dist <= T)
+        if np.any(behind_mask2):
+            pts_behind2 = pts[behind_mask2]
+            cum_behind2 = cum_dist[behind_mask2]
+            for i, p in zip(np.where(behind_mask2)[0], pts_behind2):
+                arc_offset = (cum_dist[i] - T) - L_proj  # subtract T for wrap
+                dx = p[0] - car_x
+                dz = p[1] - car_z
+                lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
+                global_behind.insert(0, p.tolist())  # prepend
+                behind_local.insert(0, (arc_offset, lateral, 0))
     
     return front_local, behind_local, global_front, global_behind
-
 def compute_centerline_cumulative_distance(centerline_x, centerline_z):
     cum_dist = [0.0]
     for i in range(1, len(centerline_x)):
@@ -434,79 +448,6 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
             sign = 1 if (diff_vec[0]*left_normal[0] + diff_vec[1]*left_normal[1]) >= 0 else -1
             best_signed_distance = sign * dist
     return best_signed_distance
-
-def get_local_centerline_points_by_distance(car_x, car_z, car_yaw,
-                                           centerline_points,
-                                           front_distance=20.0,
-                                           behind_distance=5.0):
-    pts = np.array(centerline_points)  # shape (N,2)
-    cum_dist = np.array(compute_centerline_cumulative_distance(pts[:,0].tolist(),
-                                                               pts[:,1].tolist()))
-    N = len(pts)
-    dists = np.hypot(pts[:,0] - car_x, pts[:,1] - car_z)
-    i_proj = int(np.argmin(dists))
-    L_proj = cum_dist[i_proj]
-    L_front_target = L_proj + front_distance
-    L_behind_target = L_proj - behind_distance
-
-    def interpolate_point(target_L):
-        if target_L <= cum_dist[0]:
-            return pts[0]
-        if target_L >= cum_dist[-1]:
-            return pts[-1]
-        idx = np.searchsorted(cum_dist, target_L)
-        L1, L2 = cum_dist[idx-1], cum_dist[idx]
-        p1, p2 = pts[idx-1], pts[idx]
-        ratio = (target_L - L1) / (L2 - L1)
-        return p1 + ratio * (p2 - p1)
-    
-    global_front_pt = interpolate_point(L_front_target)
-    global_behind_pt = interpolate_point(L_behind_target)
-    
-    front_mask = (cum_dist >= L_proj) & (cum_dist <= L_front_target)
-    behind_mask = (cum_dist >= L_behind_target) & (cum_dist <= L_proj)
-    
-    global_front = pts[front_mask].tolist()
-    global_behind = pts[behind_mask].tolist()
-    
-    if len(global_front) == 0 or np.hypot(*(np.array(global_front[-1]) - global_front_pt)) > 1e-3:
-        global_front.append(global_front_pt.tolist())
-    if len(global_behind) == 0 or np.hypot(*(np.array(global_behind[0]) - global_behind_pt)) > 1e-3:
-        global_behind.insert(0, global_behind_pt.tolist())
-    
-    front_local = []
-    indices_front = np.where(front_mask)[0]
-    for idx in indices_front:
-        p = pts[idx]
-        arc_offset = cum_dist[idx] - L_proj
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        front_local.append((arc_offset, lateral, 0))
-    if len(global_front) > len(indices_front):
-        p = np.array(global_front_pt)
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        front_local.append((front_distance, lateral, 0))
-    
-    behind_local = []
-    indices_behind = np.where(behind_mask)[0]
-    for idx in indices_behind:
-        p = pts[idx]
-        arc_offset = cum_dist[idx] - L_proj
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        behind_local.append((arc_offset, lateral, 0))
-    if len(global_behind) > len(indices_behind):
-        p = np.array(global_behind_pt)
-        dx = p[0] - car_x
-        dz = p[1] - car_z
-        lateral = -dx * math.sin(car_yaw) + dz * math.cos(car_yaw)
-        behind_local.insert(0, (-behind_distance, lateral, 0))
-    
-    return front_local, behind_local, global_front, global_behind
 
 def compute_acceleration(time, vx, vy):
     time = np.asarray(time)
@@ -1323,22 +1264,6 @@ class NNDriverFramework:
             car_z = frame["z_pos"]
             heading_deg = frame["yaw_deg"]
             heading_rad = math.radians(heading_deg)
-
-# Compute the projection of the car onto the centerline.
-            dists = [math.hypot(pt[0]-car_x, pt[1]-car_z) for pt in track_data["centerline_pts"]]
-            i_proj = int(np.argmin(dists))
-            proj_point = track_data["centerline_pts"][i_proj]
-# Compute a local tangent at the projection point.
-            if i_proj == 0:
-                dx = track_data["centerline_pts"][1][0] - track_data["centerline_pts"][0][0]
-                dy = track_data["centerline_pts"][1][1] - track_data["centerline_pts"][0][1]
-            elif i_proj == len(track_data["centerline_pts"]) - 1:
-                dx = track_data["centerline_pts"][-1][0] - track_data["centerline_pts"][-2][0]
-                dy = track_data["centerline_pts"][-1][1] - track_data["centerline_pts"][-2][1]
-            else:
-                dx = track_data["centerline_pts"][i_proj+1][0] - track_data["centerline_pts"][i_proj-1][0]
-                dy = track_data["centerline_pts"][i_proj+1][1] - track_data["centerline_pts"][i_proj-1][1]
-            tangent_angle = math.atan2(dy, dx)
 
 # Update car marker and heading line.
             car_marker.set_data([car_x], [car_z])
