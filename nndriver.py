@@ -90,8 +90,8 @@ class FeatureTransformer:
 # ---------------------------------------------------------------------
 class NNModel:
     def __init__(self,
-                 hidden_layer_sizes=(64, 56, 48, 40, 32, 24, 16, 8),
-                 alpha_value=0.01,
+                 hidden_layer_sizes=(64, 56, 48, 24, 16, 8),
+                 alpha_value=0.001,
                  learning_rate='adaptive',
                  learning_rate_init=0.001,
                  max_iter=1000,
@@ -145,7 +145,8 @@ class NNModel:
             raise RuntimeError("NNModel not trained yet: input_cols is None.")
         X = df[self.input_cols].values
         raw_preds = self.model.predict(X)
-        preds = self._transform_outputs(raw_preds)
+        preds = raw_preds
+        # preds = self._transform_outputs(raw_preds)
         return preds
 
     def evaluate(self, df, y_true):
@@ -381,7 +382,7 @@ class NNTrainer:
 
         track_data = self.processor.build_track_data(json_path)
         df_features = self.processor.process_csv(data_dict, track_data)
-        df_features = df_features.drop(columns=["x_pos", "z_pos", "yaw_deg"])
+        df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
 
         # if output_csv_path:
         #     df_features.to_csv(output_csv_path, index=False)
@@ -466,7 +467,7 @@ class NNDriver:
             df_results.to_csv(self.output_csv, index=False)
             print(f"[Inference] Predictions saved to {self.output_csv}")
 
-    def realtime_mode(self, track_json, host='127.0.0.1', port=65432):
+    def realtime_mode(self, json_path, host='127.0.0.1', port=65432):
         print("[NNDriver] Realtime mode...")
         self.transformer.load("transformer.joblib")
         self.nn_model = joblib.load("nn_model.joblib")
@@ -505,6 +506,8 @@ class NNDriver:
                 }
                 frame = self.processor.process_frame(sensor_data, track_data)
                 df_single = pd.DataFrame([frame])
+                df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
+
                 df_trans = self.transformer.transform(df_single)
                 prediction = self.nn_model.predict(df_trans)[0]
                 st_pred, th_pred, br_pred = prediction

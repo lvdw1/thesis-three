@@ -47,7 +47,7 @@ def main():
         driver.inference_mode(csv_path=args.csv, json_path=args.json)
     elif mode == "realtime":
         driver = NNDriver(processor, transformer, nn_model)
-        driver.realtime_mode(track_json=args.json, host=args.host, port=args.port)
+        driver.realtime_mode(json_path=args.json, host=args.host, port=args.port)
     elif mode == "visualize-realtime":
         if not args.csv:
             print("Must provide --csv for visualize-realtime.")
