@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 """
 nndriver.py
-
-Unified codebase for:
-  - Reading and post-processing data
-  - Applying StandardScaler + PCA
-  - Training and/or running inference with an MLPRegressor-based NN.
-  - Realtime driving via TCP socket.
-  - Visualizing postprocessed data (to confirm the NN’s inputs look correct).
-  - Visualizing data in "realtime" fashion, calling process_realtime_frame per timestep.
 """
 
 import os
@@ -94,7 +86,7 @@ class FeatureTransformer:
         self.exclude_cols = data["exclude_cols"]
 
 # ---------------------------------------------------------------------
-# ------------------  NNDriver -------
+# ------------------ NNModel ------------------------------------------
 # ---------------------------------------------------------------------
 
 class NNModel:
@@ -150,8 +142,9 @@ class NNModel:
         return self.model.loss_
 
 ###############################################
-# 1. Processor Class
+#  Processor Class
 ###############################################
+
 class Processor:
     """
     Handles processing of raw sensor data.
@@ -328,22 +321,6 @@ class Processor:
             frames.append(frame)
         return pd.DataFrame(frames)
 
-###############################################
-# 2. NNTrainer Class
-###############################################
-class NNTrainer:
-    """
-    Handles the training workflow:
-      - Loads raw CSV/JSON data.
-      - Uses the Processor to extract features.
-      - Applies a FeatureTransformer to scale/PCA the features.
-      - Trains the NN model.
-    """
-    def __init__(self, processor, transformer, nn_model):
-        self.processor = processor
-        self.transformer = transformer
-        self.nn_model = nn_model
-
     def build_track_data(self, json_path):
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
         clx_rev = clx[::-1]
@@ -361,7 +338,25 @@ class NNTrainer:
             "ordered_yellow": ordered_yellow,
             "curvatures_all": curvatures_all,
             "track_widths_all": track_widths_all
-        }
+            }
+
+
+###############################################
+# 2. NNTrainer Class
+###############################################
+
+class NNTrainer:
+    """
+    Handles the training workflow:
+      - Loads raw CSV/JSON data.
+      - Uses the Processor to extract features.
+      - Applies a FeatureTransformer to scale/PCA the features.
+      - Trains the NN model.
+    """
+    def __init__(self, processor, transformer, nn_model):
+        self.processor = processor
+        self.transformer = transformer
+        self.nn_model = nn_model
 
     def train(self, csv_path, json_path, output_csv_path=None, pca_variance=0.99, test_split=0.2):
         print("[NNTrainer] Training mode...")
@@ -370,9 +365,10 @@ class NNTrainer:
             print("Could not load CSV data.")
             return
 
-        track_data = self.build_track_data(json_path)
+        track_data = self.processor.build_track_data(json_path)
         df_features = self.processor.process_csv(data_dict, track_data)
         df_features = df_features.drop(columns=["x_pos", "z_pos", "yaw_deg"])
+
         # if output_csv_path:
         #     df_features.to_csv(output_csv_path, index=False)
         #     print(f"[NNTrainer] Processed CSV saved to {output_csv_path}")
@@ -409,6 +405,7 @@ class NNTrainer:
 ###############################################
 # 3. NNDriver Class
 ###############################################
+
 class NNDriver:
     """
     Handles realtime (or batch) inference:
@@ -421,34 +418,6 @@ class NNDriver:
         self.transformer = transformer
         self.nn_model = nn_model
 
-    def build_track_data_from_json(self, json_path):
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-        x_values = data.get("x", [])
-        y_values = data.get("y", [])
-        colors = data.get("color", [])
-        clx = data.get("centerline_x", [])
-        clz = data.get("centerline_y", [])
-        blue_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "blue"]
-        yellow_cones = [(x, z) for x, z, c in zip(x_values, y_values, colors) if c.lower() == "yellow"]
-
-        clx_rev = clx[::-1]
-        clz_rev = clz[::-1]
-        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
-        centerline_pts = list(zip(r_clx, r_clz))
-        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
-        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
-        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
-        return {
-            "r_clx": r_clx,
-            "r_clz": r_clz,
-            "centerline_pts": centerline_pts,
-            "ordered_blue": ordered_blue,
-            "ordered_yellow": ordered_yellow,
-            "curvatures_all": curvatures_all,
-            "track_widths_all": track_widths_all
-        }
-
     def inference_mode(self, csv_path, json_path):
         print("[NNDriver] Inference mode...")
         self.transformer.load("transformer.joblib")
@@ -458,7 +427,7 @@ class NNDriver:
             print("Could not load CSV data.")
             return
 
-        track_data = self.build_track_data_from_json(json_path)
+        track_data = self.processor.build_track_data(json_path)
         df_features = self.processor.process_csv(data_dict, track_data)
         df_trans = self.transformer.transform(df_features)
 
@@ -473,7 +442,7 @@ class NNDriver:
         print("[NNDriver] Realtime mode...")
         self.transformer.load("transformer.joblib")
         self.nn_model = joblib.load("nn_model.joblib")
-        track_data = self.build_track_data_from_json(track_json)
+        track_data = self.processor.build_track_data(json_path)
 
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.bind((host, port))
@@ -520,6 +489,10 @@ class NNDriver:
             server_socket.close()
             print("[NNDriver] Server closed.")
 
+###############################################
+# 3. Visualizer Class
+###############################################
+
 class Visualizer:
     """
     Visualizes a run frame-by-frame.
@@ -537,29 +510,6 @@ class Visualizer:
         self.processor = processor
         self.transformer = transformer
         self.nn_model = nn_model
-
-    def build_track_data(self, json_path):
-        """
-        Build the track data dictionary from a JSON file.
-        Assumes the JSON file can be parsed via parse_cone_data.
-        """
-        blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-        clx_rev = clx[::-1]
-        clz_rev = clz[::-1]
-        r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
-        centerline_pts = list(zip(r_clx, r_clz))
-        ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)
-        curvatures_all = compute_local_curvature(r_clx, r_clz, window_size=5)
-        track_widths_all = compute_local_track_widths(r_clx, r_clz, ordered_blue, ordered_yellow, max_width=10.0)
-        return {
-            "r_clx": r_clx,
-            "r_clz": r_clz,
-            "centerline_pts": centerline_pts,
-            "ordered_blue": ordered_blue,
-            "ordered_yellow": ordered_yellow,
-            "curvatures_all": curvatures_all,
-            "track_widths_all": track_widths_all
-        }
 
     def visualize_relative(self, csv_path, json_path, heading_length=3.0):
         """
@@ -731,7 +681,7 @@ class Visualizer:
         print("[Visualizer] Starting absolute visualization...")
 
         # Build track data from the JSON.
-        track_data = self.build_track_data(json_path)
+        track_data = self.processor.build_track_data(json_path)
         # Also, get the raw cone and centerline information.
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
         clx_rev = clx[::-1]
