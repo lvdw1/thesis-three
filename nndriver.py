@@ -88,7 +88,6 @@ class FeatureTransformer:
 # ---------------------------------------------------------------------
 # ------------------ NNModel ------------------------------------------
 # ---------------------------------------------------------------------
-
 class NNModel:
     def __init__(self,
                  hidden_layer_sizes=(64, 56, 48, 40, 32, 24, 16, 8),
@@ -121,21 +120,39 @@ class NNModel:
         if input_cols is None:
             input_cols = list(df.columns)
         self.input_cols = list(input_cols)
-        # Optionally store output_cols if needed, but don't try to extract y from df:
+        # Store output_cols if provided.
         self.output_cols = list(output_cols) if output_cols is not None else None
         X = df[self.input_cols].values
         self.model.fit(X, y)
 
+    def _transform_outputs(self, raw_preds):
+        """
+        Transform raw predictions using smooth activation functions:
+          - steering: tanh -> [-1, 1]
+          - throttle and brake: logistic sigmoid -> [0, 1]
+        """
+        raw_preds = np.atleast_2d(raw_preds)
+        preds = np.empty_like(raw_preds)
+        # Steering: apply tanh.
+        preds[:, 0] = np.tanh(raw_preds[:, 0])
+        # Throttle and brake: apply logistic sigmoid.
+        preds[:, 1] = 1.0 / (1.0 + np.exp(-raw_preds[:, 1]))
+        preds[:, 2] = 1.0 / (1.0 + np.exp(-raw_preds[:, 2]))
+        return preds
+
     def predict(self, df):
         if self.input_cols is None:
-            raise RuntimeError("NNDriver not trained yet: input_cols is None.")
+            raise RuntimeError("NNModel not trained yet: input_cols is None.")
         X = df[self.input_cols].values
-        return self.model.predict(X)
+        raw_preds = self.model.predict(X)
+        preds = self._transform_outputs(raw_preds)
+        return preds
 
     def evaluate(self, df, y_true):
         X = df[self.input_cols].values
-        y_pred = self.model.predict(X)
-        mse_value = mean_squared_error(y_true, y_pred)
+        raw_preds = self.model.predict(X)
+        preds = self._transform_outputs(raw_preds)
+        mse_value = mean_squared_error(y_true, preds)
         return mse_value
 
     def get_loss(self):
@@ -402,7 +419,6 @@ class NNTrainer:
 ###############################################
 # 3. NNDriver Class
 ###############################################
-
 class NNDriver:
     """
     Handles realtime (or batch) inference:
@@ -410,10 +426,11 @@ class NNDriver:
       - Uses the FeatureTransformer to transform features.
       - Returns NN model predictions.
     """
-    def __init__(self, processor, transformer, nn_model):
+    def __init__(self, processor, transformer, nn_model, output_csv=None):
         self.processor = processor
         self.transformer = transformer
         self.nn_model = nn_model
+        self.output_csv = output_csv  
 
     def inference_mode(self, csv_path, json_path):
         print("[NNDriver] Inference mode...")
@@ -430,10 +447,24 @@ class NNDriver:
 
         predictions = self.nn_model.predict(df_trans)
         times = df_features["time"].values
+        
+        # Collect prediction results in a list
+        results = []
         for i, (st, th, br) in enumerate(predictions):
             t = times[i]
-            print(f"[Inference] t={t:.2f}s => steering={st:.3f}, throttle={th:.3f}, brake={br:.3f}")
+            results.append({
+                "time": t,
+                "steering": st,
+                "throttle": th,
+                "brake": br
+            })
         print("[NNDriver] Inference complete.")
+        
+        # If output_csv path is provided, write results to CSV.
+        if self.output_csv is not None:
+            df_results = pd.DataFrame(results)
+            df_results.to_csv(self.output_csv, index=False)
+            print(f"[Inference] Predictions saved to {self.output_csv}")
 
     def realtime_mode(self, track_json, host='127.0.0.1', port=65432):
         print("[NNDriver] Realtime mode...")
@@ -835,3 +866,37 @@ class Visualizer:
             plt.pause(0.001)
         print("[Visualizer] Finished absolute visualization.")
         plt.show()
+
+    def visualizer_inferred(self, actual_csv_path, inferred_csv_path):
+        # Read the actual and inferred CSV files
+        df_actual = pd.read_csv(actual_csv_path)
+        df_inferred = pd.read_csv(inferred_csv_path)
+
+        # Create subplots: one each for steering, throttle, and brake.
+        fig, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+
+        # Plot steering values
+        axs[0].plot(df_actual['time'], df_actual['steering'], label="Actual Steering", color='blue')
+        axs[0].plot(df_inferred['time'], df_inferred['steering'], label="Inferred Steering", color='red', linestyle='--')
+        axs[0].set_ylabel("Steering")
+        axs[0].legend()
+        axs[0].grid(True)
+
+        # Plot throttle values
+        axs[1].plot(df_actual['time'], df_actual['throttle'], label="Actual Throttle", color='blue')
+        axs[1].plot(df_inferred['time'], df_inferred['throttle'], label="Inferred Throttle", color='red', linestyle='--')
+        axs[1].set_ylabel("Throttle")
+        axs[1].legend()
+        axs[1].grid(True)
+
+        # Plot brake values
+        axs[2].plot(df_actual['time'], df_actual['brake'], label="Actual Brake", color='blue')
+        axs[2].plot(df_inferred['time'], df_inferred['brake'], label="Inferred Brake", color='red', linestyle='--')
+        axs[2].set_ylabel("Brake")
+        axs[2].set_xlabel("Time (s)")
+        axs[2].legend()
+        axs[2].grid(True)
+
+        plt.tight_layout()
+        plt.show()
+

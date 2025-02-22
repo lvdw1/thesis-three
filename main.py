@@ -5,9 +5,11 @@ from nndriver import Processor, FeatureTransformer, NNModel, NNTrainer, NNDriver
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="train",
-                        help="train, infer, realtime, visualize-realtime, or visualize-realtime-absolute")
+                        help="train, infer, realtime, visualize-realtime, visualize-realtime-absolute or visualize-inferred")
     parser.add_argument("--csv", type=str,
                         help="Path to CSV file (for train, infer, visualize-realtime, or visualize-realtime-absolute)")
+    parser.add_argument("--csv2", type=str,
+                        help="Path to second CSV file")
     parser.add_argument("--json", type=str, default="default.json",
                         help="Path to track JSON")
     parser.add_argument("--transformer", type=str, default="transformer.joblib",
@@ -41,7 +43,7 @@ def main():
         if not args.csv:
             print("Must provide --csv for inference.")
             return
-        driver = NNDriver(processor, transformer, nn_model)
+        driver = NNDriver(processor, transformer, nn_model, output_csv = args.output_csv)
         driver.inference_mode(csv_path=args.csv, json_path=args.json)
     elif mode == "realtime":
         driver = NNDriver(processor, transformer, nn_model)
@@ -58,8 +60,14 @@ def main():
             return
         viz = Visualizer(processor, transformer, nn_model)
         viz.visualize_absolute(csv_path=args.csv, json_path=args.json)
+    elif mode == "visualize-inferred":
+        if not args.csv:
+            print("Must provide --csv for visualize-inferred")
+        viz = Visualizer(processor, transformer, nn_model)
+        viz.visualizer_inferred(actual_csv_path=args.csv, inferred_csv_path=args.csv2)
     else:
         print("Unknown mode. Use --mode train, infer, realtime, visualize-realtime, or visualize-realtime-absolute.")
+
 
 if __name__ == "__main__":
     main()
