@@ -265,13 +265,10 @@ class Processor:
             row_dict[f"br{idx}"] = dist_val
         for j, d in enumerate(target_x, start=1):
             row_dict[f"rel_z{j}"] = target_z[j - 1]
-            idx_front = i_proj + int(round(d))
-            if idx_front < len(track_data["r_clx"]):
-                row_dict[f"c{j}"] = track_data["curvatures_all"][idx_front]
-                row_dict[f"tw{j}"] = track_data["track_widths_all"][idx_front]["width"]
-            else:
-                row_dict[f"c{j}"] = 0.0
-                row_dict[f"tw{j}"] = 4.0
+            # Wrap-around index calculation
+            idx_front = (i_proj + int(round(d))) % len(track_data["r_clx"])
+            row_dict[f"c{j}"] = track_data["curvatures_all"][idx_front]
+            row_dict[f"tw{j}"] = track_data["track_widths_all"][idx_front]["width"]
         for j, d in enumerate(target_x_b, start=1):
             row_dict[f"b_rel_z{j}"] = target_z_b[j - 1]
             idx_behind = i_proj + int(round(d))
@@ -459,6 +456,7 @@ class NNDriver:
                     time.sleep(0.01)
                     continue
                 fields = raw_data.split(',')
+                print(fields)
                 if len(fields) < 6:
                     print("Incomplete data:", raw_data)
                     continue
@@ -470,9 +468,9 @@ class NNDriver:
                     "long_vel": float(fields[3]),
                     "lat_vel": float(fields[4]),
                     "yaw_rate": float(fields[5]),
-                    "steering": 0.0,
-                    "throttle": 0.0,
-                    "brake": 0.0
+                    "steering": None,
+                    "throttle": None,
+                    "brake": None
                 }
                 frame = self.processor.process_frame(sensor_data, track_data)
                 df_single = pd.DataFrame([frame])
@@ -834,6 +832,6 @@ class Visualizer:
             b_curv_line.set_data(np.array(list(range(-5, 0))), b_curv)
 
             plt.draw()
-            plt.pause(0.01)
+            plt.pause(0.001)
         print("[Visualizer] Finished absolute visualization.")
         plt.show()
