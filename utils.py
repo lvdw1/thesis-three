@@ -126,6 +126,7 @@ def get_local_centerline_points_by_distance(car_x, car_z, car_yaw, centerline_po
                 behind_local.insert(0, (arc_offset, lateral, 0))
     
     return front_local, behind_local, global_front, global_behind
+
 def compute_centerline_cumulative_distance(centerline_x, centerline_z):
     cum_dist = [0.0]
     for i in range(1, len(centerline_x)):
