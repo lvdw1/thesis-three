@@ -55,10 +55,6 @@ def process_hid_input(device, calibration_offsets):
         if steering_angle < -90:
             steering_angle = -90
         steering_angle = steering_angle / 90
-        if steering_angle < -1:
-            steering_angle = -1
-        if steering_angle > 1:
-            steering_angle = 1
 
         # Decode brake angle
         brake_angle = decode_angle(data[48:51], calibration_offsets[1], 10)
@@ -69,6 +65,10 @@ def process_hid_input(device, calibration_offsets):
         if accelerator_angle > 0:
             accelerator_angle -= 327.5 * 2
         throttle = -accelerator_angle / 655
+        if throttle < 0.0:
+            throttle = 0.0
+        elif throttle > 1.0:
+            throttle = 1.0
 
         if np.abs(brake) != 0.0:
             throttle = 0.0

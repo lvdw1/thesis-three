@@ -557,7 +557,7 @@ class Visualizer:
             print("Could not load CSV data.")
             return
 
-        track_data = self.build_track_data(json_path)
+        track_data = self.processor.build_track_data(json_path)
 
         # --- Set up Matplotlib figure and axes ---
         fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(10, 10), 
