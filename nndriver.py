@@ -121,9 +121,9 @@ class PyTorchNN(nn.Module):
         features = self.feature_extractor(x)
         
         # Apply specific activations for each control
-        steering = torch.tanh(self.steering_head(features))
-        throttle = torch.sigmoid(self.throttle_head(features))
-        brake = self.brake_head(features)
+        steering = (self.steering_head(features))
+        throttle = (self.throttle_head(features))
+        brake = (self.brake_head(features))
         
         # Combine outputs
         return torch.cat((steering, throttle, brake), dim=1)
