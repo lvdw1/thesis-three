@@ -96,28 +96,37 @@ class PyTorchNN(nn.Module):
     def __init__(self, input_size, hidden_layer_sizes=(64, 56, 48, 24, 16, 8), output_size=3):
         super(PyTorchNN, self).__init__()
         
-        # Create a list to hold the layers
-        layers = []
+        # Create layers for feature extraction
+        self.feature_layers = []
         
         # Input layer
-        layers.append(nn.Linear(input_size, hidden_layer_sizes[0]))
-        layers.append(nn.ReLU())
+        self.feature_layers.append(nn.Linear(input_size, hidden_layer_sizes[0]))
+        self.feature_layers.append(nn.ReLU())
         
         # Hidden layers
         for i in range(len(hidden_layer_sizes) - 1):
-            layers.append(nn.Linear(hidden_layer_sizes[i], hidden_layer_sizes[i+1]))
-            layers.append(nn.ReLU())
+            self.feature_layers.append(nn.Linear(hidden_layer_sizes[i], hidden_layer_sizes[i+1]))
+            self.feature_layers.append(nn.ReLU())
         
-        # Output layer - NO activation function to match sklearn's behavior
-        layers.append(nn.Linear(hidden_layer_sizes[-1], output_size))
+        # Create sequential model for feature extraction
+        self.feature_extractor = nn.Sequential(*self.feature_layers)
         
-        # Create sequential model
-        self.model = nn.Sequential(*layers)
+        # Separate output layers for each control
+        self.steering_head = nn.Linear(hidden_layer_sizes[-1], 1)
+        self.throttle_head = nn.Linear(hidden_layer_sizes[-1], 1)
+        self.brake_head = nn.Linear(hidden_layer_sizes[-1], 1)
     
     def forward(self, x):
-        # Return raw outputs, no activation applied
-        return self.model(x)
-
+        # Extract features
+        features = self.feature_extractor(x)
+        
+        # Apply specific activations for each control
+        steering = torch.tanh(self.steering_head(features))
+        throttle = torch.sigmoid(self.throttle_head(features))
+        brake = torch.sigmoid(self.brake_head(features))
+        
+        # Combine outputs
+        return torch.cat((steering, throttle, brake), dim=1)
 # ---------------------------------------------------------------------
 # ------------------ NNModel ------------------------------------------
 # ---------------------------------------------------------------------
@@ -127,7 +136,7 @@ class NNModel:
                  alpha_value=0.001,
                  learning_rate='adaptive',
                  learning_rate_init=0.001,
-                 max_iter=10000,
+                 max_iter=100000,
                  tol=1e-6,
                  random_state=42,
                  verbose=True,
@@ -176,11 +185,20 @@ class NNModel:
             output_size=y.shape[1]
         ).to(self.device)
         
-        # Initialize optimizer
+        # Initialize weights for better convergence
+        def init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+        
+        self.model.apply(init_weights)
+        
+        # Initialize optimizer 
         self.optimizer = optim.SGD(
             self.model.parameters(),
             lr=self.learning_rate_init,
-            weight_decay=self.alpha  # L2 regularization
+            momentum=0.9,  
+            weight_decay=self.alpha
         )
         
         # Use MSE loss
@@ -215,21 +233,6 @@ class NNModel:
                 break
             
             prev_loss = current_loss
-
-    def _transform_outputs(self, raw_preds):
-        """
-        Transform raw predictions using smooth activation functions:
-          - steering: tanh -> [-1, 1]
-          - throttle and brake: logistic sigmoid -> [0, 1]
-        """
-        raw_preds = np.atleast_2d(raw_preds)
-        preds = np.empty_like(raw_preds)
-        # Steering: apply tanh.
-        preds[:, 0] = np.tanh(raw_preds[:, 0])
-        # Throttle and brake: apply logistic sigmoid.
-        preds[:, 1] = 1.0 / (1.0 + np.exp(-raw_preds[:, 1]))
-        preds[:, 2] = 1.0 / (1.0 + np.exp(-raw_preds[:, 2]))
-        return preds
     
     def predict(self, df):
         if self.input_cols is None or self.model is None:
@@ -240,12 +243,7 @@ class NNModel:
         X_tensor = torch.FloatTensor(X).to(self.device)
         
         with torch.no_grad():
-            raw_preds = self.model(X_tensor).cpu().numpy()
-        
-        # The original code doesn't transform outputs
-        preds = raw_preds
-        # If we need to transform
-        # preds = self._transform_outputs(raw_preds)
+            preds = self.model(X_tensor).cpu().numpy()
         
         return preds
     
@@ -258,9 +256,8 @@ class NNModel:
         X_tensor = torch.FloatTensor(X).to(self.device)
         
         with torch.no_grad():
-            raw_preds = self.model(X_tensor).cpu().numpy()
+            preds = self.model(X_tensor).cpu().numpy()
         
-        preds = self._transform_outputs(raw_preds)
         mse_value = mean_squared_error(y_true, preds)
         return mse_value
     
