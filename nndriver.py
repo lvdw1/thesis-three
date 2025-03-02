@@ -18,11 +18,15 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from utils import *
 
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+
 from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
-from sklearn.neural_network import MLPRegressor
 
 # ---------------------------------------------------------------------
 # ------------------ FEATURE TRANSFORMER (SCALER + PCA) ---------------
@@ -86,6 +90,35 @@ class FeatureTransformer:
         self.exclude_cols = data["exclude_cols"]
 
 # ---------------------------------------------------------------------
+# ------------------ PyTorchNN Model ---------------------------------
+# ---------------------------------------------------------------------
+class PyTorchNN(nn.Module):
+    def __init__(self, input_size, hidden_layer_sizes=(64, 56, 48, 24, 16, 8), output_size=3):
+        super(PyTorchNN, self).__init__()
+        
+        # Create a list to hold the layers
+        layers = []
+        
+        # Input layer
+        layers.append(nn.Linear(input_size, hidden_layer_sizes[0]))
+        layers.append(nn.ReLU())
+        
+        # Hidden layers
+        for i in range(len(hidden_layer_sizes) - 1):
+            layers.append(nn.Linear(hidden_layer_sizes[i], hidden_layer_sizes[i+1]))
+            layers.append(nn.ReLU())
+        
+        # Output layer - NO activation function to match sklearn's behavior
+        layers.append(nn.Linear(hidden_layer_sizes[-1], output_size))
+        
+        # Create sequential model
+        self.model = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        # Return raw outputs, no activation applied
+        return self.model(x)
+
+# ---------------------------------------------------------------------
 # ------------------ NNModel ------------------------------------------
 # ---------------------------------------------------------------------
 class NNModel:
@@ -94,36 +127,94 @@ class NNModel:
                  alpha_value=0.001,
                  learning_rate='adaptive',
                  learning_rate_init=0.001,
-                 max_iter=1000,
+                 max_iter=10000,
                  tol=1e-6,
                  random_state=42,
                  verbose=True,
                  early_stopping=False):
-        self.model = MLPRegressor(
-            hidden_layer_sizes=hidden_layer_sizes,
-            activation='relu',
-            solver='sgd',
-            alpha=alpha_value,
-            learning_rate=learning_rate,
-            learning_rate_init=learning_rate_init,
-            max_iter=max_iter,
-            shuffle=True,
-            random_state=random_state,
-            tol=tol,
-            verbose=verbose,
-            early_stopping=early_stopping
-        )
+        
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.learning_rate_init = learning_rate_init
+        self.max_iter = max_iter
+        self.tol = tol
+        self.random_state = random_state
+        self.verbose = verbose
+        self.early_stopping = early_stopping
+        self.alpha = alpha_value  # L2 regularization
+        
+        # Will be initialized in train()
+        self.model = None
+        self.optimizer = None
+        self.criterion = None
         self.input_cols = None
         self.output_cols = None
-
+        self.input_size = None
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.loss_history = []
+        
+        # Set random seed for PyTorch
+        torch.manual_seed(random_state)
+        
     def train(self, df, y, input_cols=None, output_cols=None):
         if input_cols is None:
             input_cols = list(df.columns)
         self.input_cols = list(input_cols)
-        # Store output_cols if provided.
+        self.input_size = len(self.input_cols)
+        
+        # Store output_cols if provided
         self.output_cols = list(output_cols) if output_cols is not None else None
+        
+        # Convert data to PyTorch tensors
         X = df[self.input_cols].values
-        self.model.fit(X, y)
+        X_tensor = torch.FloatTensor(X).to(self.device)
+        y_tensor = torch.FloatTensor(y).to(self.device)
+        
+        # Initialize model
+        self.model = PyTorchNN(
+            input_size=self.input_size,
+            hidden_layer_sizes=self.hidden_layer_sizes,
+            output_size=y.shape[1]
+        ).to(self.device)
+        
+        # Initialize optimizer
+        self.optimizer = optim.SGD(
+            self.model.parameters(),
+            lr=self.learning_rate_init,
+            weight_decay=self.alpha  # L2 regularization
+        )
+        
+        # Use MSE loss
+        self.criterion = nn.MSELoss()
+        
+        # Train the model
+        self.model.train()
+        prev_loss = float('inf')
+        
+        for epoch in range(self.max_iter):
+            # Forward pass
+            self.optimizer.zero_grad()
+            outputs = self.model(X_tensor)
+            loss = self.criterion(outputs, y_tensor)
+            
+            # Backward and optimize
+            loss.backward()
+            self.optimizer.step()
+            
+            # Record loss
+            current_loss = loss.item()
+            self.loss_history.append(current_loss)
+            
+            # Print progress
+            if self.verbose and (epoch + 1) % 100 == 0:
+                print(f'Epoch [{epoch+1}/{self.max_iter}], Loss: {current_loss:.6f}')
+            
+            # Check convergence
+            if abs(prev_loss - current_loss) < self.tol:
+                if self.verbose:
+                    print(f'Converged at epoch {epoch+1} with loss {current_loss:.6f}')
+                break
+            
+            prev_loss = current_loss
 
     def _transform_outputs(self, raw_preds):
         """
@@ -139,26 +230,76 @@ class NNModel:
         preds[:, 1] = 1.0 / (1.0 + np.exp(-raw_preds[:, 1]))
         preds[:, 2] = 1.0 / (1.0 + np.exp(-raw_preds[:, 2]))
         return preds
-
+    
     def predict(self, df):
-        if self.input_cols is None:
-            raise RuntimeError("NNModel not trained yet: input_cols is None.")
+        if self.input_cols is None or self.model is None:
+            raise RuntimeError("NNModel not trained yet: input_cols is None or model is None.")
+        
+        self.model.eval()
         X = df[self.input_cols].values
-        raw_preds = self.model.predict(X)
+        X_tensor = torch.FloatTensor(X).to(self.device)
+        
+        with torch.no_grad():
+            raw_preds = self.model(X_tensor).cpu().numpy()
+        
+        # The original code doesn't transform outputs
         preds = raw_preds
+        # If we need to transform
         # preds = self._transform_outputs(raw_preds)
+        
         return preds
-
+    
     def evaluate(self, df, y_true):
+        if self.model is None:
+            raise RuntimeError("NNModel not trained yet: model is None.")
+            
+        self.model.eval()
         X = df[self.input_cols].values
-        raw_preds = self.model.predict(X)
+        X_tensor = torch.FloatTensor(X).to(self.device)
+        
+        with torch.no_grad():
+            raw_preds = self.model(X_tensor).cpu().numpy()
+        
         preds = self._transform_outputs(raw_preds)
         mse_value = mean_squared_error(y_true, preds)
         return mse_value
-
+    
     def get_loss(self):
-        return self.model.loss_
-
+        return self.loss_history[-1] if self.loss_history else float('inf')
+    
+    def save(self, path="nn_model.pt"):
+        if self.model is not None:
+            # Save both model state and metadata
+            state_dict = self.model.state_dict()
+            metadata = {
+                'input_cols': self.input_cols,
+                'output_cols': self.output_cols,
+                'input_size': self.input_size,
+                'hidden_layer_sizes': self.hidden_layer_sizes,
+                'loss_history': self.loss_history
+            }
+            torch.save({'state_dict': state_dict, 'metadata': metadata}, path)
+    
+    def load(self, path="nn_model.pt"):
+        checkpoint = torch.load(path, map_location=self.device)
+        
+        # Load metadata
+        metadata = checkpoint['metadata']
+        self.input_cols = metadata['input_cols']
+        self.output_cols = metadata['output_cols']
+        self.input_size = metadata['input_size']
+        self.hidden_layer_sizes = metadata['hidden_layer_sizes']
+        self.loss_history = metadata.get('loss_history', [])
+        
+        # Initialize and load model
+        output_size = len(self.output_cols) if self.output_cols else 3
+        self.model = PyTorchNN(
+            input_size=self.input_size,
+            hidden_layer_sizes=self.hidden_layer_sizes,
+            output_size=output_size
+        ).to(self.device)
+        self.model.load_state_dict(checkpoint['state_dict'])
+        self.model.eval()
 ###############################################
 #  Processor Class
 ###############################################
@@ -359,7 +500,6 @@ class Processor:
 ###############################################
 # 2. NNTrainer Class
 ###############################################
-
 class NNTrainer:
     """
     Handles the training workflow:
@@ -383,10 +523,6 @@ class NNTrainer:
         track_data = self.processor.build_track_data(json_path)
         df_features = self.processor.process_csv(data_dict, track_data)
         df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
-
-        # if output_csv_path:
-        #     df_features.to_csv(output_csv_path, index=False)
-        #     print(f"[NNTrainer] Processed CSV saved to {output_csv_path}")
 
         # Fit transformer (scaler + PCA) on features
         df_trans = self.transformer.fit_transform(
@@ -414,9 +550,10 @@ class NNTrainer:
         mse_value = self.nn_model.evaluate(pd.DataFrame(X_test, columns=pc_cols), y_test)
         print("[NNTrainer] Test MSE:", mse_value)
         print("[NNTrainer] Final Loss:", self.nn_model.get_loss())
-        joblib.dump(self.nn_model, "nn_model.joblib")
+        
+        # Save the PyTorch model
+        self.nn_model.save("nn_model.pt")
         print("[NNTrainer] NN model saved.")
-
 ###############################################
 # 3. NNDriver Class
 ###############################################
@@ -436,7 +573,9 @@ class NNDriver:
     def inference_mode(self, csv_path, json_path):
         print("[NNDriver] Inference mode...")
         self.transformer.load("transformer.joblib")
-        self.nn_model = joblib.load("nn_model.joblib")
+        # Update to load PyTorch model
+        self.nn_model.load("nn_model.pt")
+        
         data_dict = read_csv_data(csv_path)
         if data_dict is None:
             print("Could not load CSV data.")
@@ -470,7 +609,9 @@ class NNDriver:
     def realtime_mode(self, json_path, host='127.0.0.1', port=65432):
         print("[NNDriver] Realtime mode...")
         self.transformer.load("transformer.joblib")
-        self.nn_model = joblib.load("nn_model.joblib")
+        # Update to load PyTorch model
+        self.nn_model.load("nn_model.pt")
+        
         track_data = self.processor.build_track_data(json_path)
 
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -520,7 +661,6 @@ class NNDriver:
             client_socket.close()
             server_socket.close()
             print("[NNDriver] Server closed.")
-
 ###############################################
 # 3. Visualizer Class
 ###############################################

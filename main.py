@@ -14,7 +14,7 @@ def main():
                         help="Path to track JSON")
     parser.add_argument("--transformer", type=str, default="transformer.joblib",
                         help="Path to save/load the fitted scaler/PCA")
-    parser.add_argument("--model", type=str, default="nn_model.joblib",
+    parser.add_argument("--model", type=str, default="nn_model.pt",  # Changed to .pt for PyTorch
                         help="Path to save/load the trained model")
     parser.add_argument("--output_csv", type=str, default=None,
                         help="Optional path to save postprocessed CSV in train mode")
@@ -27,7 +27,7 @@ def main():
     # Create common components for the pipeline
     processor = Processor()
     transformer = FeatureTransformer()  # must implement fit_transform, transform, save, load, etc.
-    nn_model = NNModel()                # your neural network model class
+    nn_model = NNModel()               # now using PyTorch model
 
     mode = args.mode.lower()
 
