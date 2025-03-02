@@ -152,7 +152,8 @@ class NNModel:
     def evaluate(self, df, y_true):
         X = df[self.input_cols].values
         raw_preds = self.model.predict(X)
-        preds = self._transform_outputs(raw_preds)
+        # preds = self._transform_outputs(raw_preds)
+        preds = raw_preds
         mse_value = mean_squared_error(y_true, preds)
         return mse_value
 
