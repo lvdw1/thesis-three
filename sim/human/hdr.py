@@ -84,8 +84,8 @@ def main():
                         help="Socket host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=65432,
                         help="Socket port (default: 65432)")
-    parser.add_argument("--mode", type=str, choices=["debug", "drive"], required=True,
-                        help="Mode: 'debug' prints HID data to terminal; 'drive' runs TCP connection and logs CSV")
+    parser.add_argument("--mode", type=str, choices=["debug", "drive", "training"], required=True,
+                        help="Mode: 'debug' prints HID data to terminal; 'drive' runs TCP connection and logs CSV; 'training' runs TCP connection without logging")
     args = parser.parse_args()
 
     if args.mode == "debug":
@@ -184,6 +184,79 @@ def main():
             server_socket.close()
             csv_file.close()
             print("Server and connection closed.")
+            
+    elif args.mode == "training":
+        # Training mode: Create a TCP connection but don't log to CSV.
+        # Initialize server socket
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((args.host, args.port))
+        server_socket.listen(5)
+        print(f"Training mode: Server listening on {args.host}:{args.port}")
+
+        # Initialize HID device
+        try:
+            device = hid.Device(VENDOR_ID, PRODUCT_ID)
+            print(f"Connected to {device.manufacturer} - {device.product}")
+
+            # Calibrate initial angles
+            calibration_offsets = calibrate_angle(device)
+            print("Calibration offsets:", calibration_offsets)
+
+            # Accept client connection
+            print("Waiting for Unity client connection...")
+            client_socket, addr = server_socket.accept()
+            print(f"Connection established with {addr}")
+
+            try:
+                print("Training session started. Press Ctrl+C to stop.")
+                while True:
+                    # Process HID device input
+                    hid_result = process_hid_input(device, calibration_offsets)
+                    if hid_result:
+                        steering_angle, throttle, brake = hid_result
+                        # Print current control values in real-time
+                        print(f"\rSteering: {steering_angle:.3f}, Throttle: {throttle:.3f}, Brake: {brake:.3f}", end="")
+                        
+                        # Prepare and send control inputs to the client
+                        message = f"{steering_angle},{throttle},{brake}\n"
+                        client_socket.sendall(message.encode())
+
+                        # Receive vehicle state data from the client but don't log it
+                        try:
+                            raw_data = client_socket.recv(1024).decode('utf-8').strip()
+                            fields = raw_data.split(',')
+                            if len(fields) < 6:
+                                print(f"\nIncomplete data received: {fields}")
+                                continue
+                                
+                            # We receive the data but don't write it to a CSV file
+                            # Only used for maintaining the connection
+                        except ValueError as ve:
+                            print(f"\nData parsing error: {ve}. Raw data: '{raw_data}'")
+                        except Exception as e:
+                            print(f"\nUnexpected error: {e}")
+
+                    time.sleep(0.01)
+            except KeyboardInterrupt:
+                print("\nTraining session stopped by user.")
+            except Exception as e:
+                print(f"\nError during training: {e}")
+        except Exception as e:
+            print(f"Error initializing training mode: {e}")
+        finally:
+            try:
+                client_socket.close()
+            except:
+                pass
+            try:
+                device.close()
+            except:
+                pass
+            try:
+                server_socket.close()
+            except:
+                pass
+            print("Training session ended. All connections closed.")
 
 if __name__ == "__main__":
     main()
