@@ -674,22 +674,31 @@ class Visualizer:
         self.transformer = transformer
         self.nn_model = nn_model
 
-    def visualize_relative(self, csv_path, json_path, heading_length=3.0):
+    def visualize_relative(self, csv_path, json_path, heading_length=3.0, use_postprocessed=False):
         """
         Visualize frame-by-frame in the local (relative) coordinate system.
         The car is fixed at (0,0) and local features (cast rays, centerline points, etc.)
         are plotted relative to the vehicle.
         """
         print("[Visualizer] Starting relative visualization...")
+        
         # Reset realtime state so each run starts fresh.
         self.processor.reset_realtime_state()
-        data_dict = read_csv_data(csv_path)
-        if data_dict is None:
-            print("Could not load CSV data.")
-            return
-
         track_data = self.processor.build_track_data(json_path)
-
+        
+        if use_postprocessed:
+            # For postprocessed CSV, just read the data directly
+            print("[Visualizer] Using postprocessed CSV data...")
+            df_features = pd.read_csv(csv_path)
+            frames = df_features.to_dict('records')
+        else:
+            # Process the data on-the-fly
+            print("[Visualizer] Processing CSV data on-the-fly...")
+            data_dict = read_csv_data(csv_path)
+            if data_dict is None:
+                print("Could not load CSV data.")
+                return
+            
         # --- Set up Matplotlib figure and axes ---
         fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(10, 10), 
                                                   gridspec_kw={'height_ratios': [3, 1]})
@@ -743,99 +752,169 @@ class Visualizer:
         curvature_line_back, = ax_curv.plot([], [], 'r.-')
         ax_curv.legend(loc='upper right')
 
-        # --- Process and visualize each frame ---
-        t_arr = data_dict["time"]
-        x_arr = data_dict["x_pos"]
-        z_arr = data_dict["z_pos"]
-        yaw_arr = data_dict["yaw_angle"]
-        vx_arr = data_dict["long_vel"]
-        vy_arr = data_dict["lat_vel"]
-        yr_arr = data_dict["yaw_rate"]
-        st_arr = data_dict["steering"]
-        th_arr = data_dict["throttle"]
-        br_arr = data_dict["brake"]
+        if use_postprocessed:
+            for frame in frames:
+                # In the relative frame the car is always at (0,0).
+                car_point.set_data([0], [0])
+                # The heading line is drawn along the x-axis.
+                heading_line.set_data([0, heading_length], [0, 0])
 
-        for i in range(len(t_arr)):
-            sensor_data = {
-                "time": t_arr[i],
-                "x_pos": x_arr[i],
-                "z_pos": z_arr[i],
-                "yaw_deg": yaw_arr[i],
-                "long_vel": vx_arr[i],
-                "lat_vel": vy_arr[i],
-                "yaw_rate": yr_arr[i],
-                "steering": st_arr[i],
-                "throttle": th_arr[i],
-                "brake": br_arr[i],
-            }
-            frame = self.processor.process_frame(sensor_data, track_data)
+                # Update forward local centerline points.
+                front_pts = []
+                for j in range(1, 21):
+                    x_val = float(j)
+                    z_val = frame.get(f"rel_z{j}", 0.0)
+                    front_pts.append([x_val, z_val])
+                front_scatter.set_offsets(np.array(front_pts))
 
-            # In the relative frame the car is always at (0,0).
-            car_point.set_data([0], [0])
-            # The heading line is drawn along the x-axis.
-            heading_line.set_data([0, heading_length], [0, 0])
+                # Update behind local centerline points.
+                behind_pts = []
+                for j, x_val in enumerate(range(-5, 0), start=1):
+                    z_val = frame.get(f"b_rel_z{j}", 0.0)
+                    behind_pts.append([float(x_val), z_val])
+                behind_scatter.set_offsets(np.array(behind_pts))
 
-            # Update forward local centerline points.
-            front_pts = []
-            for j in range(1, 21):
-                x_val = float(j)
-                z_val = frame.get(f"rel_z{j}", 0.0)
-                front_pts.append([x_val, z_val])
-            front_scatter.set_offsets(np.array(front_pts))
+                # Update drawn centerline segments.
+                cl_x_fwd = np.arange(1, 21)
+                cl_z_fwd = [frame.get(f"rel_z{k}", 0.0) for k in range(1, 21)]
+                centerline_line.set_data(cl_x_fwd, cl_z_fwd)
 
-            # Update behind local centerline points.
-            behind_pts = []
-            for j, x_val in enumerate(range(-5, 0), start=1):
-                z_val = frame.get(f"b_rel_z{j}", 0.0)
-                behind_pts.append([float(x_val), z_val])
-            behind_scatter.set_offsets(np.array(behind_pts))
+                cl_x_b = np.arange(-5, 0)
+                cl_z_b = [frame.get(f"b_rel_z{k}", 0.0) for k in range(1, 6)]
+                centerline_bline.set_data(cl_x_b, cl_z_b)
 
-            # Update drawn centerline segments.
-            cl_x_fwd = np.arange(1, 21)
-            cl_z_fwd = [frame.get(f"rel_z{k}", 0.0) for k in range(1, 21)]
-            centerline_line.set_data(cl_x_fwd, cl_z_fwd)
+                # Update cast rays.
+                for idx, angle in enumerate(yellow_angles):
+                    dist_val = frame.get(f"yr{idx+1}", 0)
+                    end_x = dist_val * math.cos(angle)
+                    end_z = dist_val * math.sin(angle)
+                    yellow_ray_lines[idx].set_data([0, end_x], [0, end_z])
+                for idx, angle in enumerate(blue_angles):
+                    dist_val = frame.get(f"br{idx+1}", 0)
+                    end_x = dist_val * math.cos(angle)
+                    end_z = dist_val * math.sin(angle)
+                    blue_ray_lines[idx].set_data([0, end_x], [0, end_z])
 
-            cl_x_b = np.arange(-5, 0)
-            cl_z_b = [frame.get(f"b_rel_z{k}", 0.0) for k in range(1, 6)]
-            centerline_bline.set_data(cl_x_b, cl_z_b)
+                # Update bottom panel metrics.
+                tws = [frame.get(f"tw{j}", 0.0) for j in range(21)]
+                curvs = [frame.get(f"c{j}", 0.0) for j in range(21)]
+                track_width_line.set_data(np.arange(21), tws)
+                curvature_line.set_data(np.arange(21), curvs)
 
-            # Update cast rays.
-            for idx, angle in enumerate(yellow_angles):
-                dist_val = frame.get(f"yr{idx+1}", 0)
-                end_x = dist_val * math.cos(angle)
-                end_z = dist_val * math.sin(angle)
-                yellow_ray_lines[idx].set_data([0, end_x], [0, end_z])
-            for idx, angle in enumerate(blue_angles):
-                dist_val = frame.get(f"br{idx+1}", 0)
-                end_x = dist_val * math.cos(angle)
-                end_z = dist_val * math.sin(angle)
-                blue_ray_lines[idx].set_data([0, end_x], [0, end_z])
+                btws = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
+                bcurvs = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
+                track_width_line_back.set_data(np.array(list(range(-5, 0))), btws)
+                curvature_line_back.set_data(np.array(list(range(-5, 0))), bcurvs)
 
-            # Update bottom panel metrics.
-            tws = [frame.get(f"tw{j}", 0.0) for j in range(21)]
-            curvs = [frame.get(f"c{j}", 0.0) for j in range(21)]
-            track_width_line.set_data(np.arange(21), tws)
-            curvature_line.set_data(np.arange(21), curvs)
+                # Update the heading difference bar.
+                dh = frame.get("head_diff", 0)
+                if dh >= 0:
+                    heading_bar[0].set_y(0)
+                    heading_bar[0].set_height(dh)
+                else:
+                    heading_bar[0].set_y(dh)
+                    heading_bar[0].set_height(-dh)
 
-            btws = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
-            bcurvs = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
-            track_width_line_back.set_data(np.array(list(range(-5, 0))), btws)
-            curvature_line_back.set_data(np.array(list(range(-5, 0))), bcurvs)
+                plt.draw()
+                plt.pause(0.001)
+        else:
+            # Truly on-the-fly processing and visualization
+            t_arr = data_dict["time"]
+            x_arr = data_dict["x_pos"]
+            z_arr = data_dict["z_pos"]
+            yaw_arr = data_dict["yaw_angle"]
+            vx_arr = data_dict["long_vel"]
+            vy_arr = data_dict["lat_vel"]
+            yr_arr = data_dict["yaw_rate"]
+            st_arr = data_dict["steering"]
+            th_arr = data_dict["throttle"]
+            br_arr = data_dict["brake"]
 
-            # Update the heading difference bar.
-            dh = frame.get("head_diff", 0)
-            if dh >= 0:
-                heading_bar[0].set_y(0)
-                heading_bar[0].set_height(dh)
-            else:
-                heading_bar[0].set_y(dh)
-                heading_bar[0].set_height(-dh)
+            for i in range(len(t_arr)):
+                # Process this individual frame
+                sensor_data = {
+                    "time": t_arr[i],
+                    "x_pos": x_arr[i],
+                    "z_pos": z_arr[i],
+                    "yaw_deg": yaw_arr[i],
+                    "long_vel": vx_arr[i],
+                    "lat_vel": vy_arr[i],
+                    "yaw_rate": yr_arr[i],
+                    "steering": st_arr[i],
+                    "throttle": th_arr[i],
+                    "brake": br_arr[i],
+                }
+                frame = self.processor.process_frame(sensor_data, track_data)
+                
+                # Update visualization with this frame
+                # (Visualization code for a single frame)
+                # In the relative frame the car is always at (0,0).
+                car_point.set_data([0], [0])
+                # The heading line is drawn along the x-axis.
+                heading_line.set_data([0, heading_length], [0, 0])
 
-            plt.draw()
-            plt.pause(0.001)
-        print("[Visualizer] Finished relative visualization.")
+                # Update forward local centerline points.
+                front_pts = []
+                for j in range(1, 21):
+                    x_val = float(j)
+                    z_val = frame.get(f"rel_z{j}", 0.0)
+                    front_pts.append([x_val, z_val])
+                front_scatter.set_offsets(np.array(front_pts))
 
-    def visualize_absolute(self, csv_path, json_path, heading_length=3.0):
+                # Update behind local centerline points.
+                behind_pts = []
+                for j, x_val in enumerate(range(-5, 0), start=1):
+                    z_val = frame.get(f"b_rel_z{j}", 0.0)
+                    behind_pts.append([float(x_val), z_val])
+                behind_scatter.set_offsets(np.array(behind_pts))
+
+                # Update drawn centerline segments.
+                cl_x_fwd = np.arange(1, 21)
+                cl_z_fwd = [frame.get(f"rel_z{k}", 0.0) for k in range(1, 21)]
+                centerline_line.set_data(cl_x_fwd, cl_z_fwd)
+
+                cl_x_b = np.arange(-5, 0)
+                cl_z_b = [frame.get(f"b_rel_z{k}", 0.0) for k in range(1, 6)]
+                centerline_bline.set_data(cl_x_b, cl_z_b)
+
+                # Update cast rays.
+                for idx, angle in enumerate(yellow_angles):
+                    dist_val = frame.get(f"yr{idx+1}", 0)
+                    end_x = dist_val * math.cos(angle)
+                    end_z = dist_val * math.sin(angle)
+                    yellow_ray_lines[idx].set_data([0, end_x], [0, end_z])
+                for idx, angle in enumerate(blue_angles):
+                    dist_val = frame.get(f"br{idx+1}", 0)
+                    end_x = dist_val * math.cos(angle)
+                    end_z = dist_val * math.sin(angle)
+                    blue_ray_lines[idx].set_data([0, end_x], [0, end_z])
+
+                # Update bottom panel metrics.
+                tws = [frame.get(f"tw{j}", 0.0) for j in range(21)]
+                curvs = [frame.get(f"c{j}", 0.0) for j in range(21)]
+                track_width_line.set_data(np.arange(21), tws)
+                curvature_line.set_data(np.arange(21), curvs)
+
+                btws = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
+                bcurvs = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
+                track_width_line_back.set_data(np.array(list(range(-5, 0))), btws)
+                curvature_line_back.set_data(np.array(list(range(-5, 0))), bcurvs)
+
+                # Update the heading difference bar.
+                dh = frame.get("head_diff", 0)
+                if dh >= 0:
+                    heading_bar[0].set_y(0)
+                    heading_bar[0].set_height(dh)
+                else:
+                    heading_bar[0].set_y(dh)
+                    heading_bar[0].set_height(-dh)
+
+                plt.draw()
+                plt.pause(0.001)
+
+            print("[Visualizer] Finished relative visualization.")
+
+    def visualize_absolute(self, csv_path, json_path, heading_length=3.0, use_postprocessed=False):
         """
         Visualize frame-by-frame in absolute (global) coordinates.
         The scene (cones, track edges, centerline) is drawn from the JSON file,
@@ -854,6 +933,19 @@ class Visualizer:
         clx_abs, clz_abs = resample_centerline(clx, clz, resolution=1.0)
         centerline_pts_fw = list(zip(clx_abs, clz_abs))
 
+        if use_postprocessed:
+            # For postprocessed CSV, just read the data directly
+            print("[Visualizer] Using postprocessed CSV data...")
+            df_features = pd.read_csv(csv_path)
+            frames = df_features.to_dict('records')
+        else:
+            # Process the data on-the-fly
+            print("[Visualizer] Processing CSV data on-the-fly...")
+            data = read_csv_data(csv_path)
+            if data is None:
+                print("Could not load CSV data.")
+                return
+    
         # --- Set up Matplotlib figure and axes ---
         fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(12, 10), 
                                                   gridspec_kw={'height_ratios': [3, 1]})
@@ -915,91 +1007,145 @@ class Visualizer:
         # Reset realtime state.
         self.processor.reset_realtime_state()
 
-        data = read_csv_data(csv_path)
-        if data is None:
-            print("Could not load CSV data.")
-            return
+        if use_postprocessed:
+            for frame in frames:
+                # --- Top Panel Update: Absolute View ---
+                car_x = frame["x_pos"]
+                car_z = frame["z_pos"]
+                heading_deg = frame["yaw_deg"]
+                heading_rad = math.radians(heading_deg)
+                car_marker.set_data([car_x], [car_z])
+                hx = car_x + heading_length * math.cos(heading_rad)
+                hy = car_z + heading_length * math.sin(heading_rad)
+                heading_line.set_data([car_x, hx], [car_z, hy])
 
-        t_arr = data["time"]
-        x_arr = data["x_pos"]
-        z_arr = data["z_pos"]
-        yaw_arr = data["yaw_angle"]
-        vx_arr = data["long_vel"]
-        vy_arr = data["lat_vel"]
-        yr_arr = data["yaw_rate"]
-        st_arr = data["steering"]
-        th_arr = data["throttle"]
-        br_arr = data["brake"]
+                # Update cast rays.
+                for idx, angle in enumerate(yellow_angles, start=1):
+                    ray_dist = frame.get(f"yr{idx}", 0)
+                    local_x = ray_dist * math.cos(angle)
+                    local_y = ray_dist * math.sin(angle)
+                    abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
+                    abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
+                    yellow_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
+                for idx, angle in enumerate(blue_angles, start=1):
+                    ray_dist = frame.get(f"br{idx}", 0)
+                    local_x = ray_dist * math.cos(angle)
+                    local_y = ray_dist * math.sin(angle)
+                    abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
+                    abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
+                    blue_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
 
-        for i in range(len(t_arr)):
-            sensor_data = {
-                "time": t_arr[i],
-                "x_pos": x_arr[i],
-                "z_pos": z_arr[i],
-                "yaw_deg": yaw_arr[i],
-                "long_vel": vx_arr[i],
-                "lat_vel": vy_arr[i],
-                "yaw_rate": yr_arr[i],
-                "steering": st_arr[i],
-                "throttle": th_arr[i],
-                "brake": br_arr[i],
-            }
-            frame = self.processor.process_frame(sensor_data, track_data)
+                # Update local centerline points (transformed to absolute).
+                front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
+                    car_x, car_z, heading_deg, centerline_pts_fw,
+                    front_distance=5.0, behind_distance=20.0
+                )
+                if global_front:
+                    front_scatter.set_offsets(np.array(global_front))
+                else:
+                    front_scatter.set_offsets(np.empty((0, 2)))
+                if global_behind:
+                    behind_scatter.set_offsets(np.array(global_behind))
+                else:
+                    behind_scatter.set_offsets(np.empty((0, 2)))
 
-            # --- Top Panel Update: Absolute View ---
-            car_x = frame["x_pos"]
-            car_z = frame["z_pos"]
-            heading_deg = frame["yaw_deg"]
-            heading_rad = math.radians(heading_deg)
-            car_marker.set_data([car_x], [car_z])
-            hx = car_x + heading_length * math.cos(heading_rad)
-            hy = car_z + heading_length * math.sin(heading_rad)
-            heading_line.set_data([car_x, hx], [car_z, hy])
+                # --- Bottom Panel Update: Local Metrics ---
+                f_tw = [frame.get(f"tw{j}", 0.0) for j in range(21)]
+                f_curv = [frame.get(f"c{j}", 0.0) for j in range(21)]
+                f_track_line.set_data(np.arange(21), f_tw)
+                f_curv_line.set_data(np.arange(21), f_curv)
+                b_tw = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
+                b_curv = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
+                b_track_line.set_data(np.array(list(range(-5, 0))), b_tw)
+                b_curv_line.set_data(np.array(list(range(-5, 0))), b_curv)
 
-            # Update cast rays.
-            for idx, angle in enumerate(yellow_angles, start=1):
-                ray_dist = frame.get(f"yr{idx}", 0)
-                local_x = ray_dist * math.cos(angle)
-                local_y = ray_dist * math.sin(angle)
-                abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
-                abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
-                yellow_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
-            for idx, angle in enumerate(blue_angles, start=1):
-                ray_dist = frame.get(f"br{idx}", 0)
-                local_x = ray_dist * math.cos(angle)
-                local_y = ray_dist * math.sin(angle)
-                abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
-                abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
-                blue_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
+                plt.draw()
+                plt.pause(0.001)
+            print("[Visualizer] Finished absolute visualization.")
+            plt.show()
+        else:
+                        # Truly on-the-fly processing and visualization
+            t_arr = data["time"]
+            x_arr = data["x_pos"]
+            z_arr = data["z_pos"]
+            yaw_arr = data["yaw_angle"]
+            vx_arr = data["long_vel"]
+            vy_arr = data["lat_vel"]
+            yr_arr = data["yaw_rate"]
+            st_arr = data["steering"]
+            th_arr = data["throttle"]
+            br_arr = data["brake"]
 
-            # Update local centerline points (transformed to absolute).
-            front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
-                car_x, car_z, heading_deg, centerline_pts_fw,
-                front_distance=5.0, behind_distance=20.0
-            )
-            if global_front:
-                front_scatter.set_offsets(np.array(global_front))
-            else:
-                front_scatter.set_offsets(np.empty((0, 2)))
-            if global_behind:
-                behind_scatter.set_offsets(np.array(global_behind))
-            else:
-                behind_scatter.set_offsets(np.empty((0, 2)))
+            for i in range(len(t_arr)):
+                # Process this individual frame
+                sensor_data = {
+                    "time": t_arr[i],
+                    "x_pos": x_arr[i],
+                    "z_pos": z_arr[i],
+                    "yaw_deg": yaw_arr[i],
+                    "long_vel": vx_arr[i],
+                    "lat_vel": vy_arr[i],
+                    "yaw_rate": yr_arr[i],
+                    "steering": st_arr[i],
+                    "throttle": th_arr[i],
+                    "brake": br_arr[i],
+                }
+                frame = self.processor.process_frame(sensor_data, track_data)
+                
+                # Update visualization with this frame
+                # --- Top Panel Update: Absolute View ---
+                car_x = frame["x_pos"]
+                car_z = frame["z_pos"]
+                heading_deg = frame["yaw_deg"]
+                heading_rad = math.radians(heading_deg)
+                car_marker.set_data([car_x], [car_z])
+                hx = car_x + heading_length * math.cos(heading_rad)
+                hy = car_z + heading_length * math.sin(heading_rad)
+                heading_line.set_data([car_x, hx], [car_z, hy])
+                # Update cast rays.
+                for idx, angle in enumerate(yellow_angles, start=1):
+                    ray_dist = frame.get(f"yr{idx}", 0)
+                    local_x = ray_dist * math.cos(angle)
+                    local_y = ray_dist * math.sin(angle)
+                    abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
+                    abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
+                    yellow_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
+                for idx, angle in enumerate(blue_angles, start=1):
+                    ray_dist = frame.get(f"br{idx}", 0)
+                    local_x = ray_dist * math.cos(angle)
+                    local_y = ray_dist * math.sin(angle)
+                    abs_x = car_x + local_x * math.cos(heading_rad) - local_y * math.sin(heading_rad)
+                    abs_y = car_z + local_x * math.sin(heading_rad) + local_y * math.cos(heading_rad)
+                    blue_ray_lines[idx-1].set_data([car_x, abs_x], [car_z, abs_y])
 
-            # --- Bottom Panel Update: Local Metrics ---
-            f_tw = [frame.get(f"tw{j}", 0.0) for j in range(21)]
-            f_curv = [frame.get(f"c{j}", 0.0) for j in range(21)]
-            f_track_line.set_data(np.arange(21), f_tw)
-            f_curv_line.set_data(np.arange(21), f_curv)
-            b_tw = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
-            b_curv = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
-            b_track_line.set_data(np.array(list(range(-5, 0))), b_tw)
-            b_curv_line.set_data(np.array(list(range(-5, 0))), b_curv)
+                # Update local centerline points (transformed to absolute).
+                front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
+                    car_x, car_z, heading_deg, centerline_pts_fw,
+                    front_distance=5.0, behind_distance=20.0
+                )
+                if global_front:
+                    front_scatter.set_offsets(np.array(global_front))
+                else:
+                    front_scatter.set_offsets(np.empty((0, 2)))
+                if global_behind:
+                    behind_scatter.set_offsets(np.array(global_behind))
+                else:
+                    behind_scatter.set_offsets(np.empty((0, 2)))
 
-            plt.draw()
-            plt.pause(0.001)
-        print("[Visualizer] Finished absolute visualization.")
-        plt.show()
+                # --- Bottom Panel Update: Local Metrics ---
+                f_tw = [frame.get(f"tw{j}", 0.0) for j in range(21)]
+                f_curv = [frame.get(f"c{j}", 0.0) for j in range(21)]
+                f_track_line.set_data(np.arange(21), f_tw)
+                f_curv_line.set_data(np.arange(21), f_curv)
+                b_tw = [frame.get(f"b_tw{j}", 0.0) for j in range(1, 6)]
+                b_curv = [frame.get(f"b_c{j}", 0.0) for j in range(1, 6)]
+                b_track_line.set_data(np.array(list(range(-5, 0))), b_tw)
+                b_curv_line.set_data(np.array(list(range(-5, 0))), b_curv)
+
+                plt.draw()
+                plt.pause(0.001)
+            print("[Visualizer] Finished absolute visualization.")
+            plt.show()
 
     def visualizer_inferred(self, actual_csv_path, inferred_csv_path):
         # Read the actual and inferred CSV files

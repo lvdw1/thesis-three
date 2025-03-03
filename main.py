@@ -22,6 +22,7 @@ def main():
                         help="TCP server host")
     parser.add_argument("--port", type=int, default=65432,
                         help="TCP server port")
+    parser.add_argument("--option", type=str, default="onthefly")
     args = parser.parse_args()
 
     # Create common components for the pipeline
@@ -30,6 +31,8 @@ def main():
     nn_model = NNModel()
 
     mode = args.mode.lower()
+
+    use_postprocessed = (args.option.lower() == 'postprocessed')
 
     if mode == "process":
         if not args.csv:
@@ -66,18 +69,18 @@ def main():
     elif mode == "realtime":
         driver = NNDriver(processor, transformer, nn_model)
         driver.realtime_mode(json_path=args.json, host=args.host, port=args.port)
-    elif mode == "visualize-realtime":
+    elif mode == "visualize-relative":
         if not args.csv:
             print("Must provide --csv for visualize-realtime.")
             return
         viz = Visualizer(processor, transformer, nn_model)
-        viz.visualize_relative(csv_path=args.csv, json_path=args.json)
-    elif mode == "visualize-realtime-absolute":
+        viz.visualize_relative(csv_path=args.csv, json_path=args.json, use_postprocessed = use_postprocessed)
+    elif mode == "visualize-absolute":
         if not args.csv:
             print("Must provide --csv for visualize-realtime-absolute.")
             return
         viz = Visualizer(processor, transformer, nn_model)
-        viz.visualize_absolute(csv_path=args.csv, json_path=args.json)
+        viz.visualize_absolute(csv_path=args.csv, json_path=args.json, use_postprocessed = use_postprocessed)
     elif mode == "visualize-inferred":
         if not args.csv:
             print("Must provide --csv for visualize-inferred")
