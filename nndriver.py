@@ -348,7 +348,7 @@ class Processor:
         self.last_vy = lat_vel
 
         yaw_rad = math.radians(yaw_deg)
-        yrd, brd = raycast_for_state(
+        brd, yrd = raycast_for_state(
             x_shifted, z_shifted, yaw_rad,
             track_data["ordered_blue"], track_data["ordered_yellow"],
             max_distance=20.0
@@ -727,8 +727,8 @@ class Visualizer:
         centerline_bline, = ax_top.plot([], [], 'k-', lw=1)
 
         # Set up cast rays (yellow and blue)
-        yellow_angles_deg = np.arange(-20, 111, 10)
-        blue_angles_deg = np.arange(20, -111, -10)
+        blue_angles_deg = np.arange(-20, 111, 10)
+        yellow_angles_deg = np.arange(20, -111, -10)
         yellow_angles = np.deg2rad(yellow_angles_deg)
         blue_angles = np.deg2rad(blue_angles_deg)
         yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0]
@@ -977,8 +977,8 @@ class Visualizer:
         heading_line, = ax_top.plot([], [], 'r-', lw=2, label="Heading")
 
         # Cast ray lines.
-        yellow_angles = np.deg2rad(np.arange(-20, 111, 10))
-        blue_angles = np.deg2rad(np.arange(20, -111, -10))
+        blue_angles = np.deg2rad(np.arange(-20, 111, 10))
+        yellow_angles = np.deg2rad(np.arange(20, -111, -10))
         yellow_ray_lines = [ax_top.plot([], [], color='yellow', linestyle='--', lw=1)[0]
                             for _ in yellow_angles]
         blue_ray_lines = [ax_top.plot([], [], color='cyan', linestyle='--', lw=1)[0]

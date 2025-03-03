@@ -272,35 +272,43 @@ def compute_ray_edge_intersection_distance(ray_origin, ray_direction, edge_point
     return best_t if found else None
 
 def raycast_for_state(car_x, car_z, car_heading, blue_edge, yellow_edge, max_distance=20):
-    yellow_angles_deg = np.arange(-20, 111, 10)
-    blue_angles_deg = np.arange(20, -111, -10)
+    # SWAP: Previously yellow was left (-20 to 110), blue was right (20 to -110)
+    # Now blue is left (-20 to 110), yellow is right (20 to -110)
+    blue_angles_deg = np.arange(-20, 111, 10)   # Changed from yellow_angles_deg
+    yellow_angles_deg = np.arange(20, -111, -10) # Changed from blue_angles_deg
+    
     yellow_ray_distances = []
     blue_ray_distances = []
-    for rel_angle_deg in yellow_angles_deg:
-        rel_angle = math.radians(rel_angle_deg)
-        ray_angle = car_heading + rel_angle
-        ray_dir = (math.cos(ray_angle), math.sin(ray_angle))
-        closest_distance = max_distance
-        for i in range(len(yellow_edge)-1):
-            seg_start = yellow_edge[i]
-            seg_end = yellow_edge[i+1]
-            t_val = ray_segment_intersection((car_x, car_z), ray_dir, seg_start, seg_end)
-            if t_val is not None and t_val < closest_distance:
-                closest_distance = t_val
-        yellow_ray_distances.append(closest_distance)
+    
+    # Use blue angles for blue rays (left side)
     for rel_angle_deg in blue_angles_deg:
         rel_angle = math.radians(rel_angle_deg)
         ray_angle = car_heading + rel_angle
         ray_dir = (math.cos(ray_angle), math.sin(ray_angle))
         closest_distance = max_distance
-        for i in range(len(blue_edge)-1):
+        for i in range(len(blue_edge)-1):  # Now using blue_edge instead of yellow_edge
             seg_start = blue_edge[i]
             seg_end = blue_edge[i+1]
             t_val = ray_segment_intersection((car_x, car_z), ray_dir, seg_start, seg_end)
             if t_val is not None and t_val < closest_distance:
                 closest_distance = t_val
-        blue_ray_distances.append(closest_distance)
-    return yellow_ray_distances, blue_ray_distances
+        blue_ray_distances.append(closest_distance)  # Changed from yellow_ray_distances
+    
+    # Use yellow angles for yellow rays (right side)
+    for rel_angle_deg in yellow_angles_deg:
+        rel_angle = math.radians(rel_angle_deg)
+        ray_angle = car_heading + rel_angle
+        ray_dir = (math.cos(ray_angle), math.sin(ray_angle))
+        closest_distance = max_distance
+        for i in range(len(yellow_edge)-1):  # Now using yellow_edge instead of blue_edge
+            seg_start = yellow_edge[i]
+            seg_end = yellow_edge[i+1]
+            t_val = ray_segment_intersection((car_x, car_z), ray_dir, seg_start, seg_end)
+            if t_val is not None and t_val < closest_distance:
+                closest_distance = t_val
+        yellow_ray_distances.append(closest_distance)  # Changed from blue_ray_distances
+    
+    return blue_ray_distances, yellow_ray_distances  # Swapped order to match the naming
 
 def compute_local_curvature(centerline_x, centerline_z, window_size=5):
     N = len(centerline_x)
