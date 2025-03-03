@@ -477,8 +477,8 @@ class Processor:
 
     def build_track_data(self, json_path):
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-        clx_rev = clx[::-1]
-        clz_rev = clz[::-1]
+        clx_rev = clx
+        clz_rev = clz
         r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
         centerline_pts = list(zip(r_clx, r_clz))
         ordered_blue, ordered_yellow = create_track_edges(blue_cones, yellow_cones, clx_rev, clz_rev)

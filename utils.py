@@ -367,8 +367,8 @@ def compute_local_track_widths(resampled_clx, resampled_clz, ordered_blue, order
             T = (1.0, 0.0)
         else:
             T = (dx/norm, dz/norm)
-        left_normal = (-T[1], T[0])
-        right_normal = (T[1], -T[0])
+        right_normal = (-T[1], T[0])
+        left_normal = (T[1], -T[0])
         center = pts[i]
         d_yellow = compute_ray_edge_intersection_distance(center, left_normal, ordered_yellow, max_distance=max_width)
         d_blue = compute_ray_edge_intersection_distance(center, right_normal, ordered_blue, max_distance=max_width)
