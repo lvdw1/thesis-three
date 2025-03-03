@@ -1,23 +1,23 @@
 import argparse
-# Import or define your refactored classes:
 from nndriver import Processor, FeatureTransformer, NNModel, NNTrainer, NNDriver, Visualizer
+from utils import read_csv_data  # Make sure this import is available
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=str, default="train",
-                        help="train, infer, realtime, visualize-realtime, visualize-realtime-absolute or visualize-inferred")
+                        help="train, infer, realtime, process, visualize-realtime, visualize-realtime-absolute or visualize-inferred")
     parser.add_argument("--csv", type=str,
-                        help="Path to CSV file (for train, infer, visualize-realtime, or visualize-realtime-absolute)")
+                        help="Path to CSV file (for train, infer, process, visualize-realtime, or visualize-realtime-absolute)")
     parser.add_argument("--csv2", type=str,
                         help="Path to second CSV file")
     parser.add_argument("--json", type=str, default="default.json",
                         help="Path to track JSON")
     parser.add_argument("--transformer", type=str, default="transformer.joblib",
                         help="Path to save/load the fitted scaler/PCA")
-    parser.add_argument("--model", type=str, default="nn_model.pt",  # Changed to .pt for PyTorch
+    parser.add_argument("--model", type=str, default="nn_model.pt",
                         help="Path to save/load the trained model")
     parser.add_argument("--output_csv", type=str, default=None,
-                        help="Optional path to save postprocessed CSV in train mode")
+                        help="Optional path to save processed/output CSV")
     parser.add_argument("--host", type=str, default="127.0.0.1",
                         help="TCP server host")
     parser.add_argument("--port", type=int, default=65432,
@@ -26,12 +26,30 @@ def main():
 
     # Create common components for the pipeline
     processor = Processor()
-    transformer = FeatureTransformer()  # must implement fit_transform, transform, save, load, etc.
-    nn_model = NNModel()               # now using PyTorch model
+    transformer = FeatureTransformer()
+    nn_model = NNModel()
 
     mode = args.mode.lower()
 
-    if mode == "train":
+    if mode == "process":
+        if not args.csv:
+            print("Must provide --csv for processing.")
+            return
+        if not args.output_csv:
+            print("Must provide --output_csv for saving processed data.")
+            return
+            
+        print("[Processor] Processing CSV mode...")
+        data_dict = read_csv_data(args.csv)
+        if data_dict is None:
+            print("Could not load CSV data.")
+            return
+            
+        track_data = processor.build_track_data(args.json)
+        df_features = processor.process_csv(data_dict, track_data)
+        df_features.to_csv(args.output_csv, index=False)
+        print(f"[Processor] Processed CSV saved to {args.output_csv}")
+    elif mode == "train":
         if not args.csv:
             print("Must provide --csv for training.")
             return

@@ -92,47 +92,11 @@ class FeatureTransformer:
 # ---------------------------------------------------------------------
 # ------------------ PyTorchNN Model ---------------------------------
 # ---------------------------------------------------------------------
-class PyTorchNN(nn.Module):
-    def __init__(self, input_size, hidden_layer_sizes=(64, 56, 48, 24, 16, 8), output_size=3):
-        super(PyTorchNN, self).__init__()
-        
-        # Create layers for feature extraction
-        self.feature_layers = []
-        
-        # Input layer
-        self.feature_layers.append(nn.Linear(input_size, hidden_layer_sizes[0]))
-        self.feature_layers.append(nn.ReLU())
-        
-        # Hidden layers
-        for i in range(len(hidden_layer_sizes) - 1):
-            self.feature_layers.append(nn.Linear(hidden_layer_sizes[i], hidden_layer_sizes[i+1]))
-            self.feature_layers.append(nn.ReLU())
-        
-        # Create sequential model for feature extraction
-        self.feature_extractor = nn.Sequential(*self.feature_layers)
-        
-        # Separate output layers for each control
-        self.steering_head = nn.Linear(hidden_layer_sizes[-1], 1)
-        self.throttle_head = nn.Linear(hidden_layer_sizes[-1], 1)
-        self.brake_head = nn.Linear(hidden_layer_sizes[-1], 1)
-    
-    def forward(self, x):
-        # Extract features
-        features = self.feature_extractor(x)
-        
-        # Apply specific activations for each control
-        steering = (self.steering_head(features))
-        throttle = (self.throttle_head(features))
-        brake = (self.brake_head(features))
-        
-        # Combine outputs
-        return torch.cat((steering, throttle, brake), dim=1)
-# ---------------------------------------------------------------------
-# ------------------ NNModel ------------------------------------------
-# ---------------------------------------------------------------------
-class NNModel:
+class NNModel(nn.Module):
     def __init__(self,
+                 input_size=None,
                  hidden_layer_sizes=(64, 56, 48, 24, 16, 8),
+                 output_size=3,
                  alpha_value=0.001,
                  learning_rate='adaptive',
                  learning_rate_init=0.001,
@@ -141,6 +105,7 @@ class NNModel:
                  random_state=42,
                  verbose=True,
                  early_stopping=False):
+        super(NNModel, self).__init__()
         
         self.hidden_layer_sizes = hidden_layer_sizes
         self.learning_rate_init = learning_rate_init
@@ -151,20 +116,60 @@ class NNModel:
         self.early_stopping = early_stopping
         self.alpha = alpha_value  # L2 regularization
         
-        # Will be initialized in train()
-        self.model = None
+        # Will be initialized when input_size is known
+        self.input_size = input_size
+        self.output_size = output_size
+        
+        # Initialize model architecture if input_size is provided
+        if input_size is not None:
+            self._initialize_architecture()
+        
+        # Other attributes
         self.optimizer = None
         self.criterion = None
         self.input_cols = None
         self.output_cols = None
-        self.input_size = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.loss_history = []
         
         # Set random seed for PyTorch
         torch.manual_seed(random_state)
+    
+    def _initialize_architecture(self):
+        # Create layers for feature extraction
+        feature_layers = []
         
-    def train(self, df, y, input_cols=None, output_cols=None):
+        # Input layer
+        feature_layers.append(nn.Linear(self.input_size, self.hidden_layer_sizes[0]))
+        feature_layers.append(nn.ReLU())
+        
+        # Hidden layers
+        for i in range(len(self.hidden_layer_sizes) - 1):
+            feature_layers.append(nn.Linear(self.hidden_layer_sizes[i], self.hidden_layer_sizes[i+1]))
+            feature_layers.append(nn.ReLU())
+        
+        # Create sequential model for feature extraction
+        self.feature_extractor = nn.Sequential(*feature_layers)
+        
+        # Separate output layers for each control
+        self.steering_head = nn.Linear(self.hidden_layer_sizes[-1], 1)
+        self.throttle_head = nn.Linear(self.hidden_layer_sizes[-1], 1)
+        self.brake_head = nn.Linear(self.hidden_layer_sizes[-1], 1)
+    
+    def forward(self, x):
+        # Extract features
+        features = self.feature_extractor(x)
+        
+        # Apply specific activations for each control
+        steering = self.steering_head(features)
+        throttle = self.throttle_head(features)
+        brake = self.brake_head(features)
+        
+        # Combine outputs
+        return torch.cat((steering, throttle, brake), dim=1)
+        
+    def train_model(self, df, y, input_cols=None, output_cols=None):
+        """Renamed from train to avoid conflict with nn.Module.train()"""
         if input_cols is None:
             input_cols = list(df.columns)
         self.input_cols = list(input_cols)
@@ -172,18 +177,16 @@ class NNModel:
         
         # Store output_cols if provided
         self.output_cols = list(output_cols) if output_cols is not None else None
+        self.output_size = y.shape[1]
+        
+        # Initialize model architecture if not already done
+        if not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
+            self._initialize_architecture()
         
         # Convert data to PyTorch tensors
         X = df[self.input_cols].values
         X_tensor = torch.FloatTensor(X).to(self.device)
         y_tensor = torch.FloatTensor(y).to(self.device)
-        
-        # Initialize model
-        self.model = PyTorchNN(
-            input_size=self.input_size,
-            hidden_layer_sizes=self.hidden_layer_sizes,
-            output_size=y.shape[1]
-        ).to(self.device)
         
         # Initialize weights for better convergence
         def init_weights(m):
@@ -191,11 +194,11 @@ class NNModel:
                 nn.init.xavier_uniform_(m.weight)
                 nn.init.zeros_(m.bias)
         
-        self.model.apply(init_weights)
+        self.apply(init_weights)
         
         # Initialize optimizer 
         self.optimizer = optim.SGD(
-            self.model.parameters(),
+            self.parameters(),
             lr=self.learning_rate_init,
             momentum=0.9,  
             weight_decay=self.alpha
@@ -205,13 +208,13 @@ class NNModel:
         self.criterion = nn.MSELoss()
         
         # Train the model
-        self.model.train()
+        self.train()  # Put in training mode
         prev_loss = float('inf')
         
         for epoch in range(self.max_iter):
             # Forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(X_tensor)
+            outputs = self(X_tensor)
             loss = self.criterion(outputs, y_tensor)
             
             # Backward and optimize
@@ -235,28 +238,28 @@ class NNModel:
             prev_loss = current_loss
     
     def predict(self, df):
-        if self.input_cols is None or self.model is None:
-            raise RuntimeError("NNModel not trained yet: input_cols is None or model is None.")
+        if self.input_cols is None or not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
+            raise RuntimeError("NNModel not trained yet: input_cols is None or model is not initialized.")
         
-        self.model.eval()
+        self.eval()
         X = df[self.input_cols].values
         X_tensor = torch.FloatTensor(X).to(self.device)
         
         with torch.no_grad():
-            preds = self.model(X_tensor).cpu().numpy()
+            preds = self(X_tensor).cpu().numpy()
         
         return preds
     
     def evaluate(self, df, y_true):
-        if self.model is None:
-            raise RuntimeError("NNModel not trained yet: model is None.")
+        if not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
+            raise RuntimeError("NNModel not trained yet: model is not initialized.")
             
-        self.model.eval()
+        self.eval()
         X = df[self.input_cols].values
         X_tensor = torch.FloatTensor(X).to(self.device)
         
         with torch.no_grad():
-            preds = self.model(X_tensor).cpu().numpy()
+            preds = self(X_tensor).cpu().numpy()
         
         mse_value = mean_squared_error(y_true, preds)
         return mse_value
@@ -265,9 +268,9 @@ class NNModel:
         return self.loss_history[-1] if self.loss_history else float('inf')
     
     def save(self, path="nn_model.pt"):
-        if self.model is not None:
+        if hasattr(self, 'feature_extractor') and self.feature_extractor is not None:
             # Save both model state and metadata
-            state_dict = self.model.state_dict()
+            state_dict = self.state_dict()
             metadata = {
                 'input_cols': self.input_cols,
                 'output_cols': self.output_cols,
@@ -288,15 +291,12 @@ class NNModel:
         self.hidden_layer_sizes = metadata['hidden_layer_sizes']
         self.loss_history = metadata.get('loss_history', [])
         
-        # Initialize and load model
-        output_size = len(self.output_cols) if self.output_cols else 3
-        self.model = PyTorchNN(
-            input_size=self.input_size,
-            hidden_layer_sizes=self.hidden_layer_sizes,
-            output_size=output_size
-        ).to(self.device)
-        self.model.load_state_dict(checkpoint['state_dict'])
-        self.model.eval()
+        # Initialize architecture
+        self._initialize_architecture()
+        
+        # Load state dict
+        self.load_state_dict(checkpoint['state_dict'])
+        self.eval()
 ###############################################
 #  Processor Class
 ###############################################
@@ -472,6 +472,7 @@ class Processor:
             }
             frame = self.process_frame(sensor_data, track_data)
             frames.append(frame)
+
         return pd.DataFrame(frames)
 
     def build_track_data(self, json_path):
@@ -498,13 +499,6 @@ class Processor:
 # 2. NNTrainer Class
 ###############################################
 class NNTrainer:
-    """
-    Handles the training workflow:
-      - Loads raw CSV/JSON data.
-      - Uses the Processor to extract features.
-      - Applies a FeatureTransformer to scale/PCA the features.
-      - Trains the NN model.
-    """
     def __init__(self, processor, transformer, nn_model):
         self.processor = processor
         self.transformer = transformer
@@ -542,7 +536,7 @@ class NNTrainer:
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_split, random_state=42)
 
         # Train NN model
-        self.nn_model.train(pd.DataFrame(X_train, columns=pc_cols), y_train,
+        self.nn_model.train_model(pd.DataFrame(X_train, columns=pc_cols), y_train,
                     input_cols=pc_cols, output_cols=out_cols)
         mse_value = self.nn_model.evaluate(pd.DataFrame(X_test, columns=pc_cols), y_test)
         print("[NNTrainer] Test MSE:", mse_value)
