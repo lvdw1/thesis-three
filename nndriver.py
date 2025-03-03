@@ -376,7 +376,7 @@ class Processor:
             x_shifted, z_shifted, yaw_rad, track_data["centerline_pts"],
             front_distance=20.0, behind_distance=5.0
         )
-        if front_local:
+        if behind_local:
             fl = np.array(front_local)
             x_front = fl[:, 0]
             z_front = fl[:, 1]
@@ -386,7 +386,7 @@ class Processor:
             target_x = np.arange(1, 21)
             target_z = np.zeros(20)
 
-        if behind_local:
+        if front_local:
             bl = np.array(behind_local)
             x_behind = bl[:, 0]
             z_behind = bl[:, 1]
@@ -926,8 +926,8 @@ class Visualizer:
         track_data = self.processor.build_track_data(json_path)
         # Also, get the raw cone and centerline information.
         blue_cones, yellow_cones, clx, clz = parse_cone_data(json_path)
-        clx_rev = clx[::-1]
-        clz_rev = clz[::-1]
+        clx_rev = clx
+        clz_rev = clz
         r_clx, r_clz = resample_centerline(clx_rev, clz_rev, resolution=1.0)
         # For the absolute view, also resample the centerline in the original order.
         clx_abs, clz_abs = resample_centerline(clx, clz, resolution=1.0)
@@ -1038,7 +1038,7 @@ class Visualizer:
                 # Update local centerline points (transformed to absolute).
                 front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
                     car_x, car_z, heading_deg, centerline_pts_fw,
-                    front_distance=5.0, behind_distance=20.0
+                    front_distance=20.0, behind_distance=5.0
                 )
                 if global_front:
                     front_scatter.set_offsets(np.array(global_front))
@@ -1121,7 +1121,7 @@ class Visualizer:
                 # Update local centerline points (transformed to absolute).
                 front_local, behind_local, global_front, global_behind = get_local_centerline_points_by_distance(
                     car_x, car_z, heading_deg, centerline_pts_fw,
-                    front_distance=5.0, behind_distance=20.0
+                    front_distance=20.0, behind_distance=5.0
                 )
                 if global_front:
                     front_scatter.set_offsets(np.array(global_front))
