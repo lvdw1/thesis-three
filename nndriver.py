@@ -129,8 +129,11 @@ class NNModel(nn.Module):
         self.criterion = None
         self.input_cols = None
         self.output_cols = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
         self.loss_history = []
+
+        if self.input_size is not None:
+            self.to(self.device)
         
         # Set random seed for PyTorch
         torch.manual_seed(random_state)
@@ -182,6 +185,7 @@ class NNModel(nn.Module):
         # Initialize model architecture if not already done
         if not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
             self._initialize_architecture()
+            self.to(self.device)
         
         # Convert data to PyTorch tensors
         X = df[self.input_cols].values
@@ -293,6 +297,7 @@ class NNModel(nn.Module):
         
         # Initialize architecture
         self._initialize_architecture()
+        self.to(self.device)
         
         # Load state dict
         self.load_state_dict(checkpoint['state_dict'])
@@ -449,7 +454,7 @@ class Processor:
         t_arr = data_dict["time"]
         x_arr = data_dict["x_pos"]
         z_arr = data_dict["z_pos"]
-        yaw_arr = data_dict["yaw_angle"]
+        yaw_arr = data_dict["yaw_deg"]
         vx_arr = data_dict["long_vel"]
         vy_arr = data_dict["lat_vel"]
         yr_arr = data_dict["yaw_rate"]
@@ -504,16 +509,15 @@ class NNTrainer:
         self.transformer = transformer
         self.nn_model = nn_model
 
-    def train(self, csv_path, json_path, output_csv_path=None, pca_variance=0.99, test_split=0.2):
+    def train(self, csv_path, json_path, output_csv_path=None, pca_variance=0.99, test_split=0.2, use_postprocessed=False):
         print("[NNTrainer] Training mode...")
-        data_dict = read_csv_data(csv_path)
-        if data_dict is None:
-            print("Could not load CSV data.")
-            return
-
         track_data = self.processor.build_track_data(json_path)
-        df_features = self.processor.process_csv(data_dict, track_data)
-        df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
+        if not use_postprocessed:
+            df_features = self.processor.process_csv(data_dict, track_data)
+            df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
+        else:
+            df_features = pd.read_csv(csv_path)
+            df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
 
         # Fit transformer (scaler + PCA) on features
         df_trans = self.transformer.fit_transform(
@@ -822,7 +826,7 @@ class Visualizer:
             t_arr = data_dict["time"]
             x_arr = data_dict["x_pos"]
             z_arr = data_dict["z_pos"]
-            yaw_arr = data_dict["yaw_angle"]
+            yaw_arr = data_dict["yaw_deg"]
             vx_arr = data_dict["long_vel"]
             vy_arr = data_dict["lat_vel"]
             yr_arr = data_dict["yaw_rate"]
@@ -1068,7 +1072,7 @@ class Visualizer:
             t_arr = data["time"]
             x_arr = data["x_pos"]
             z_arr = data["z_pos"]
-            yaw_arr = data["yaw_angle"]
+            yaw_arr = data["yaw_deg"]
             vx_arr = data["long_vel"]
             vy_arr = data["lat_vel"]
             yr_arr = data["yaw_rate"]

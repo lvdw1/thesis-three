@@ -59,7 +59,8 @@ def main():
         trainer = NNTrainer(processor, transformer, nn_model)
         trainer.train(csv_path=args.csv,
                       json_path=args.json,
-                      output_csv_path=args.output_csv)
+                      output_csv_path=args.output_csv,
+                      use_postprocessed = use_postprocessed)
     elif mode == "infer":
         if not args.csv:
             print("Must provide --csv for inference.")

@@ -214,7 +214,7 @@ def read_csv_data(file_path):
         "time": np.array(times),
         "x_pos": np.array(x_pos),
         "z_pos": np.array(z_pos),
-        "yaw_angle": np.array(yaw_angle),
+        "yaw_deg": np.array(yaw_angle),
         "long_vel": np.array(long_vel),
         "lat_vel": np.array(lat_vel),
         "yaw_rate": np.array(yaw_rate),
