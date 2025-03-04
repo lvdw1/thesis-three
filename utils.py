@@ -214,7 +214,7 @@ def read_csv_data(file_path):
         "time": np.array(times),
         "x_pos": np.array(x_pos),
         "z_pos": np.array(z_pos),
-        "yaw_deg": np.array(yaw_angle),
+        "yaw_angle": np.array(yaw_angle),
         "long_vel": np.array(long_vel),
         "lat_vel": np.array(lat_vel),
         "yaw_rate": np.array(yaw_rate),
@@ -223,8 +223,8 @@ def read_csv_data(file_path):
         "brake": np.array(brake),
     }
 
-def shift_position_single(x, z, yaw_deg, shift_distance=-1.5):
-    yaw = np.radians(yaw_deg)
+def shift_position_single(x, z, yaw_angle, shift_distance=-1.5):
+    yaw = np.radians(yaw_angle)
     offset_x = shift_distance * np.sin(yaw)
     offset_z = -shift_distance * np.cos(yaw)
     return x + offset_x, z + offset_z

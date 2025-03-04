@@ -327,7 +327,7 @@ class Processor:
         t = sensor_data["time"]
         car_x = sensor_data["x_pos"]
         car_z = sensor_data["z_pos"]
-        yaw_deg = sensor_data["yaw_deg"]
+        yaw_angle = sensor_data["yaw_angle"]
         long_vel = sensor_data["long_vel"]
         lat_vel = sensor_data["lat_vel"]
         yaw_rate = sensor_data["yaw_rate"]
@@ -336,7 +336,7 @@ class Processor:
         brake = sensor_data["brake"]
 
         # Shift car position to a lookahead point
-        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_deg, shift_distance=2.5)
+        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_angle, shift_distance=2.5)
 
         # Compute local acceleration (using previous frame if available)
         if self.last_time is None or self.last_vx is None or self.last_vy is None:
@@ -352,7 +352,7 @@ class Processor:
         self.last_vx = long_vel
         self.last_vy = lat_vel
 
-        yaw_rad = math.radians(yaw_deg)
+        yaw_rad = math.radians(yaw_angle)
         brd, yrd = raycast_for_state(
             x_shifted, z_shifted, yaw_rad,
             track_data["ordered_blue"], track_data["ordered_yellow"],
@@ -406,7 +406,7 @@ class Processor:
             "time": t,
             "x_pos": x_shifted,
             "z_pos": z_shifted,
-            "yaw_deg": yaw_deg,
+            "yaw_angle": yaw_angle,
             "long_vel": long_vel,
             "lat_vel": lat_vel,
             "yaw_rate": yaw_rate,
@@ -454,7 +454,7 @@ class Processor:
         t_arr = data_dict["time"]
         x_arr = data_dict["x_pos"]
         z_arr = data_dict["z_pos"]
-        yaw_arr = data_dict["yaw_deg"]
+        yaw_arr = data_dict["yaw_angle"]
         vx_arr = data_dict["long_vel"]
         vy_arr = data_dict["lat_vel"]
         yr_arr = data_dict["yaw_rate"]
@@ -467,7 +467,7 @@ class Processor:
                 "time": t_arr[i],
                 "x_pos": x_arr[i],
                 "z_pos": z_arr[i],
-                "yaw_deg": yaw_arr[i],
+                "yaw_angle": yaw_arr[i],
                 "long_vel": vx_arr[i],
                 "lat_vel": vy_arr[i],
                 "yaw_rate": yr_arr[i],
@@ -509,15 +509,14 @@ class NNTrainer:
         self.transformer = transformer
         self.nn_model = nn_model
 
-    def train(self, csv_path, json_path, output_csv_path=None, pca_variance=0.99, test_split=0.2, use_postprocessed=False):
+    def train(self, data, json_path = None, output_csv_path=None, pca_variance=0.99, test_split=0.2, use_postprocessed=False):
         print("[NNTrainer] Training mode...")
-        track_data = self.processor.build_track_data(json_path)
         if not use_postprocessed:
-            df_features = self.processor.process_csv(data_dict, track_data)
-            df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
+            track_data = self.processor.build_track_data(json_path)
+            df_features = self.processor.process_csv(data, track_data)
+            df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
         else:
-            df_features = pd.read_csv(csv_path)
-            df_features = df_features.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
+            df_features = data.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
 
         # Fit transformer (scaler + PCA) on features
         df_trans = self.transformer.fit_transform(
@@ -632,7 +631,7 @@ class NNDriver:
                     "time": time.time(),
                     "x_pos": float(fields[0]),
                     "z_pos": float(fields[1]),
-                    "yaw_deg": float(fields[2]),
+                    "yaw_angle": float(fields[2]),
                     "long_vel": float(fields[3]),
                     "lat_vel": float(fields[4]),
                     "yaw_rate": float(fields[5]),
@@ -642,7 +641,7 @@ class NNDriver:
                 }
                 frame = self.processor.process_frame(sensor_data, track_data)
                 df_single = pd.DataFrame([frame])
-                df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_deg"])
+                df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
 
                 df_trans = self.transformer.transform(df_single)
                 prediction = self.nn_model.predict(df_trans)[0]
@@ -826,7 +825,7 @@ class Visualizer:
             t_arr = data_dict["time"]
             x_arr = data_dict["x_pos"]
             z_arr = data_dict["z_pos"]
-            yaw_arr = data_dict["yaw_deg"]
+            yaw_arr = data_dict["yaw_angle"]
             vx_arr = data_dict["long_vel"]
             vy_arr = data_dict["lat_vel"]
             yr_arr = data_dict["yaw_rate"]
@@ -840,7 +839,7 @@ class Visualizer:
                     "time": t_arr[i],
                     "x_pos": x_arr[i],
                     "z_pos": z_arr[i],
-                    "yaw_deg": yaw_arr[i],
+                    "yaw_angle": yaw_arr[i],
                     "long_vel": vx_arr[i],
                     "lat_vel": vy_arr[i],
                     "yaw_rate": yr_arr[i],
@@ -1016,7 +1015,7 @@ class Visualizer:
                 # --- Top Panel Update: Absolute View ---
                 car_x = frame["x_pos"]
                 car_z = frame["z_pos"]
-                heading_deg = frame["yaw_deg"]
+                heading_deg = frame["yaw_angle"]
                 heading_rad = math.radians(heading_deg)
                 car_marker.set_data([car_x], [car_z])
                 hx = car_x + heading_length * math.cos(heading_rad)
@@ -1072,7 +1071,7 @@ class Visualizer:
             t_arr = data["time"]
             x_arr = data["x_pos"]
             z_arr = data["z_pos"]
-            yaw_arr = data["yaw_deg"]
+            yaw_arr = data["yaw_angle"]
             vx_arr = data["long_vel"]
             vy_arr = data["lat_vel"]
             yr_arr = data["yaw_rate"]
@@ -1086,7 +1085,7 @@ class Visualizer:
                     "time": t_arr[i],
                     "x_pos": x_arr[i],
                     "z_pos": z_arr[i],
-                    "yaw_deg": yaw_arr[i],
+                    "yaw_angle": yaw_arr[i],
                     "long_vel": vx_arr[i],
                     "lat_vel": vy_arr[i],
                     "yaw_rate": yr_arr[i],
@@ -1100,7 +1099,7 @@ class Visualizer:
                 # --- Top Panel Update: Absolute View ---
                 car_x = frame["x_pos"]
                 car_z = frame["z_pos"]
-                heading_deg = frame["yaw_deg"]
+                heading_deg = frame["yaw_angle"]
                 heading_rad = math.radians(heading_deg)
                 car_marker.set_data([car_x], [car_z])
                 hx = car_x + heading_length * math.cos(heading_rad)

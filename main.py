@@ -2,6 +2,7 @@ import argparse
 import glob
 import os
 import re
+import pandas as pd
 from nndriver import Processor, FeatureTransformer, NNModel, NNTrainer, NNDriver, Visualizer
 from utils import read_csv_data
 
@@ -97,11 +98,55 @@ def main():
         if not args.csv:
             print("Must provide --csv for training.")
             return
+
+        # Expand wildcards in the training CSV pattern
+        csv_files = glob.glob(args.csv)
+        if not csv_files:
+            print(f"No CSV files match the pattern: {args.csv}")
+            return
+
+        if use_postprocessed:
+            training_dfs = [pd.read_csv(f) for f in csv_files]
+
+        else:
+            training_dfs = []
+            # For each CSV file, extract track number and process with corresponding JSON file
+            for csv_file in csv_files:
+                filename = os.path.basename(csv_file)
+                match = re.search(r'track(\d+)', filename)
+                if match:
+                    track_number = match.group(1)
+                else:
+                    print(f"Could not extract track number from {filename}, skipping.")
+                    continue
+
+                json_file = args.json.replace('*', track_number)
+                if not os.path.exists(json_file):
+                    print(f"JSON file {json_file} not found for {csv_file}, skipping.")
+                    continue
+
+                data_dict = read_csv_data(csv_file)
+                if data_dict is None:
+                    print(f"Could not load CSV data from {csv_file}, skipping.")
+                    continue
+
+                track_data = processor.build_track_data(json_file)
+                df_features = processor.process_csv(data_dict, track_data)
+                training_dfs.append(df_features)
+
+        if not training_dfs:
+            print("No training data available, exiting.")
+            return
+
+        # Concatenate all training DataFrames into a unified training dataset
+        unified_training_data = pd.concat(training_dfs, ignore_index=True)
+        print(f"Unified training data shape: {unified_training_data.shape}")
+
+        # Create the trainer and train on the unified DataFrame.
+        # (Assuming NNTrainer.train_model is updated to accept a DataFrame directly.)
         trainer = NNTrainer(processor, transformer, nn_model)
-        trainer.train(csv_path=args.csv,
-                      json_path=args.json,
-                      output_csv_path=args.output_csv,
-                      use_postprocessed=use_postprocessed)
+        trainer.train(data=unified_training_data, use_postprocessed=use_postprocessed)
+
     elif mode == "infer":
         if not args.csv:
             print("Must provide --csv for inference.")
