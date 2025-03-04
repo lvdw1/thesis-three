@@ -99,7 +99,7 @@ class NNModel(nn.Module):
                  output_size=3,
                  alpha_value=0.001,
                  learning_rate='adaptive',
-                 learning_rate_init=0.001,
+                 learning_rate_init=0.2,
                  max_iter=100000,
                  tol=1e-6,
                  random_state=42,
@@ -172,7 +172,6 @@ class NNModel(nn.Module):
         return torch.cat((steering, throttle, brake), dim=1)
         
     def train_model(self, df, y, input_cols=None, output_cols=None):
-        """Renamed from train to avoid conflict with nn.Module.train()"""
         if input_cols is None:
             input_cols = list(df.columns)
         self.input_cols = list(input_cols)
@@ -207,12 +206,22 @@ class NNModel(nn.Module):
             momentum=0.9,  
             weight_decay=self.alpha
         )
+
+        
+# Initialize the scheduler. For example, reduce LR by a factor of 0.1 if loss doesn't improve for 10 epochs.
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',         # We want to minimize the loss.
+            factor=0.1,         # Multiply LR by this factor when triggered.
+            patience=10,        # Number of epochs with no improvement after which LR will be reduced.
+        )
         
         # Use MSE loss
         self.criterion = nn.MSELoss()
         
         # Train the model
         self.train()  # Put in training mode
+        lr_threshold = 1e-6
         prev_loss = float('inf')
         
         for epoch in range(self.max_iter):
@@ -224,23 +233,25 @@ class NNModel(nn.Module):
             # Backward and optimize
             loss.backward()
             self.optimizer.step()
+
+            scheduler.step(loss.item())
             
             # Record loss
             current_loss = loss.item()
             self.loss_history.append(current_loss)
+            current_lr = scheduler.get_last_lr()[0]
             
             # Print progress
             if self.verbose and (epoch + 1) % 100 == 0:
-                print(f'Epoch [{epoch+1}/{self.max_iter}], Loss: {current_loss:.6f}')
-            
-            # Check convergence
-            if abs(prev_loss - current_loss) < self.tol:
+                print(f'Epoch [{epoch+1}/{self.max_iter}], Loss: {current_loss:.6f}, LR: {current_lr:.6f}')
+
+             # Convergence check (if desired)
+            if epoch > 0 and abs(prev_loss - loss.item()) < self.tol and current_lr < lr_threshold:
                 if self.verbose:
-                    print(f'Converged at epoch {epoch+1} with loss {current_loss:.6f}')
+                    print(f'Converged at epoch {epoch+1} with loss {loss.item():.6f}')
                 break
-            
-            prev_loss = current_loss
-    
+            prev_loss = loss.item()               
+                
     def predict(self, df):
         if self.input_cols is None or not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
             raise RuntimeError("NNModel not trained yet: input_cols is None or model is not initialized.")
