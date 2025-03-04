@@ -271,17 +271,14 @@ class NNModel(nn.Module):
             
         self.eval()
         X = df[self.input_cols].values
-<<<<<<< HEAD
         raw_preds = self.model.predict(X)
         # preds = self._transform_outputs(raw_preds)
         preds = raw_preds
-=======
         X_tensor = torch.FloatTensor(X).to(self.device)
         
         with torch.no_grad():
             preds = self(X_tensor).cpu().numpy()
         
->>>>>>> pytorch
         mse_value = mean_squared_error(y_true, preds)
         return mse_value
     
