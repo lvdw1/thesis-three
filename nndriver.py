@@ -264,23 +264,20 @@ class NNModel(nn.Module):
             preds = self(X_tensor).cpu().numpy()
         
         return preds
-    
-    def evaluate(self, df, y_true):
+
+     def evaluate(self, df, y_true):
         if not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
             raise RuntimeError("NNModel not trained yet: model is not initialized.")
-            
+        
         self.eval()
         X = df[self.input_cols].values
-        raw_preds = self.model.predict(X)
-        # preds = self._transform_outputs(raw_preds)
-        preds = raw_preds
         X_tensor = torch.FloatTensor(X).to(self.device)
         
         with torch.no_grad():
             preds = self(X_tensor).cpu().numpy()
         
         mse_value = mean_squared_error(y_true, preds)
-        return mse_value
+        return mse_value   
     
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
@@ -555,13 +552,15 @@ class NNTrainer:
         # Train NN model
         self.nn_model.train_model(pd.DataFrame(X_train, columns=pc_cols), y_train,
                     input_cols=pc_cols, output_cols=out_cols)
+
+        self.nn_model.save("nn_model.pt")
+        print("[NNTrainer] NN model saved.")
+
         mse_value = self.nn_model.evaluate(pd.DataFrame(X_test, columns=pc_cols), y_test)
         print("[NNTrainer] Test MSE:", mse_value)
         print("[NNTrainer] Final Loss:", self.nn_model.get_loss())
         
         # Save the PyTorch model
-        self.nn_model.save("nn_model.pt")
-        print("[NNTrainer] NN model saved.")
 ###############################################
 # 3. NNDriver Class
 ###############################################

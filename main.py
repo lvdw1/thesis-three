@@ -75,6 +75,11 @@ def main():
             json_file = json_pattern.replace('*', track_number)
             output_file = output_pattern.replace('*', track_number)
 
+            # Check if the output file already exists. If so, skip processing this file.
+            if os.path.exists(output_file):
+                print(f"[Processor] Skipping track {track_number}: {output_file} already exists.")
+                continue
+
             print(f"[Processor] Processing track {track_number}:")
             print(f"  Input: {input_file}")
             print(f"  JSON: {json_file}")
@@ -107,7 +112,6 @@ def main():
 
         if use_postprocessed:
             training_dfs = [pd.read_csv(f) for f in csv_files]
-
         else:
             training_dfs = []
             # For each CSV file, extract track number and process with corresponding JSON file
@@ -143,7 +147,6 @@ def main():
         print(f"Unified training data shape: {unified_training_data.shape}")
 
         # Create the trainer and train on the unified DataFrame.
-        # (Assuming NNTrainer.train_model is updated to accept a DataFrame directly.)
         trainer = NNTrainer(processor, transformer, nn_model)
         trainer.train(data=unified_training_data, use_postprocessed=use_postprocessed)
 
@@ -175,7 +178,7 @@ def main():
         viz = Visualizer(processor, transformer, nn_model)
         viz.visualizer_inferred(actual_csv_path=args.csv, inferred_csv_path=args.csv2)
     else:
-        print("Unknown mode. Use --mode train, infer, realtime, visualize-realtime, or visualize-realtime-absolute.")
+        print("Unknown mode. Use --mode train, infer, realtime, process, visualize-realtime, or visualize-realtime-absolute.")
 
 if __name__ == "__main__":
     main()
