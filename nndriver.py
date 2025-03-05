@@ -265,7 +265,7 @@ class NNModel(nn.Module):
         
         return preds
 
-     def evaluate(self, df, y_true):
+    def evaluate(self, df, y_true):
         if not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
             raise RuntimeError("NNModel not trained yet: model is not initialized.")
         
