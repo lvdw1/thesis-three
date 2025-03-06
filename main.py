@@ -157,7 +157,7 @@ def main():
         driver = NNDriver(processor, transformer, nn_model, output_csv=args.output_csv)
         driver.inference_mode(csv_path=args.csv, json_path=args.json)
     elif mode == "realtime":
-        driver = NNDriver(processor, transformer, nn_model)
+        driver = NNDriver(processor, transformer, nn_model, output_csv=args.output_csv)
         driver.realtime_mode(json_path=args.json, host=args.host, port=args.port)
     elif mode == "visualize-relative":
         if not args.csv:

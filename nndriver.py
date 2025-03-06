@@ -629,6 +629,8 @@ class NNDriver:
         client_socket, addr = server_socket.accept()
         print(f"[Realtime] Connection from {addr}")
 
+        all_frames = []
+
         try:
             # previous_time = time.time()
             while True:
@@ -637,15 +639,14 @@ class NNDriver:
                 # previous_time = time.time()
                 raw_data = client_socket.recv(4096).decode('utf-8').strip()
                 if not raw_data:
-                    time.sleep(0.01)
-                    continue
+                    break
                 fields = raw_data.split(',')
                 # print(fields)
                 sensor_data = {
                     "time": time.time(),
                     "x_pos": float(fields[0]),
                     "z_pos": float(fields[1]),
-                    "yaw_angle": float(fields[2]),
+                    "yaw_angle": -float(fields[2])+90,
                     "long_vel": float(fields[3]),
                     "lat_vel": float(fields[4]),
                     "yaw_rate": float(fields[5]),
@@ -654,6 +655,8 @@ class NNDriver:
                     "brake": None
                 }
                 frame = self.processor.process_frame(sensor_data, track_data)
+                all_frames.append(frame)
+
                 df_single = pd.DataFrame([frame])
                 df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
 
@@ -669,6 +672,10 @@ class NNDriver:
             client_socket.close()
             server_socket.close()
             print("[NNDriver] Server closed.")
+            if self.output_csv:
+                df_all = pd.DataFrame(all_frames)
+                df_all.to_csv(self.output_csv, index = False)
+                print(f"[Realtime] Processed CSV saved to {self.output_csv}")
 ###############################################
 # 3. Visualizer Class
 ###############################################
