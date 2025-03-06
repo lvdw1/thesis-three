@@ -663,7 +663,9 @@ class NNDriver:
                 df_trans = self.transformer.transform(df_features)
                 prediction = self.nn_model.predict(df_trans)[0]
                 st_pred, th_pred, br_pred = prediction
-                message = f"{st_pred},{th_pred},{0.0}\n"
+                if br_pred < 0.2:
+                    br_pred = 0.0
+                message = f"{st_pred},{th_pred},{br_pred}\n"
                 print(f"[Realtime] Sending: {message.strip()}")
                 client_socket.sendall(message.encode())
         except Exception as e:
