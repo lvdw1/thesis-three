@@ -632,12 +632,12 @@ class NNDriver:
         all_frames = []
 
         try:
-            # previous_time = time.time()
+            previous_time = time.time()
             while True:
-                # current_time = time.time()
-                # print(current_time- previous_time)
-                # previous_time = time.time()
-                raw_data = client_socket.recv(4096).decode('utf-8').strip()
+                current_time = time.time()
+                print(current_time- previous_time)
+                previous_time = time.time()
+                raw_data = client_socket.recv(1024).decode('utf-8').strip()
                 if not raw_data:
                     break
                 fields = raw_data.split(',')
@@ -663,8 +663,8 @@ class NNDriver:
                 df_trans = self.transformer.transform(df_features)
                 prediction = self.nn_model.predict(df_trans)[0]
                 st_pred, th_pred, br_pred = prediction
-                message = f"{st_pred},{th_pred},{br_pred}\n"
-                # print(f"[Realtime] Sending: {message.strip()}")
+                message = f"{st_pred},{th_pred},{0.0}\n"
+                print(f"[Realtime] Sending: {message.strip()}")
                 client_socket.sendall(message.encode())
         except Exception as e:
             print(f"[Realtime] Error: {e}")
