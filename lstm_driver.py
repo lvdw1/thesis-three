@@ -148,9 +148,48 @@ class LSTMModel(nn.Module):
         
         # Initialize weights for better convergence
         def init_weights(m):
-            if isinstance(m, nn.Linear) or isinstance(m, nn.LSTM):
-                nn.init.xavier_uniform_(m.weight_ih_l0)
-                nn.init.orthogonal_(m.weight_hh_l0)
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LSTM):
+                # Check if we're on MPS (Apple Silicon)
+                if self.device.type == 'mps':
+                    # Use xavier_uniform for all weights on MPS to avoid unsupported ops
+                    for name, param in m.named_parameters():
+                        if 'weight' in name:
+                            nn.init.xavier_uniform_(param)
+                        elif 'bias' in name:
+                            nn.init.zeros_(param)
+                else:
+                    # On other devices, we can use orthogonal init for hidden-to-hidden weights
+                    nn.init.xavier_uniform_(m.weight_ih_l0)
+                    nn.init.orthogonal_(m.weight_hh_l0)
+                    
+                    # Initialize biases
+                    nn.init.zeros_(m.bias_ih_l0)
+                    nn.init.zeros_(m.bias_hh_l0)
+                    
+                    # If bidirectional, initialize the reverse direction weights too
+                    if m.bidirectional:
+                        nn.init.xavier_uniform_(m.weight_ih_l0_reverse)
+                        nn.init.orthogonal_(m.weight_hh_l0_reverse)
+                        nn.init.zeros_(m.bias_ih_l0_reverse)
+                        nn.init.zeros_(m.bias_hh_l0_reverse)
+                    
+                    # Initialize weights for additional layers if num_layers > 1
+                    for layer in range(1, self.num_layers):
+                        layer_str = f'l{layer}'
+                        nn.init.xavier_uniform_(getattr(m, f'weight_ih_{layer_str}'))
+                        nn.init.orthogonal_(getattr(m, f'weight_hh_{layer_str}'))
+                        nn.init.zeros_(getattr(m, f'bias_ih_{layer_str}'))
+                        nn.init.zeros_(getattr(m, f'bias_hh_{layer_str}'))
+                        
+                        if m.bidirectional:
+                            nn.init.xavier_uniform_(getattr(m, f'weight_ih_{layer_str}_reverse'))
+                            nn.init.orthogonal_(getattr(m, f'weight_hh_{layer_str}_reverse'))
+                            nn.init.zeros_(getattr(m, f'bias_ih_{layer_str}_reverse'))
+                            nn.init.zeros_(getattr(m, f'bias_hh_{layer_str}_reverse'))
         
         self.apply(init_weights)
         
@@ -233,7 +272,7 @@ class LSTMModel(nn.Module):
                 scheduler.step(avg_train_loss)
             
             # Print progress
-            if self.verbose and (epoch + 1) % 10 == 0:
+            if self.verbose and (epoch + 1) % 1 == 0:
                 if val_loader is not None:
                     print(f'Epoch [{epoch+1}/{self.max_iter}], Train Loss: {avg_train_loss:.6f}, Val Loss: {avg_val_loss:.6f}')
                 else:
@@ -423,7 +462,7 @@ def create_sequences(df, sequence_length, input_cols, output_cols):
     
     return np.array(X), np.array(y)
 
-def create_data_loaders(X, y, batch_size=32, test_size=0.2, val_size=0.1, random_state=42):
+def create_data_loaders(X, y, batch_size=8, test_size=0.2, val_size=0.1, random_state=42):
     """
     Create PyTorch DataLoaders from sequences.
     
@@ -488,7 +527,7 @@ class LSTMTrainer:
         self.lstm_model = lstm_model
     
     def train(self, data, json_path=None, output_csv_path=None, pca_variance=0.99, 
-              sequence_length=10, test_split=0.2, val_split=0.1, batch_size=32, use_postprocessed=False):
+              sequence_length=10, test_split=0.2, val_split=0.1, batch_size=8, use_postprocessed=False):
         """
         Train the LSTM model.
         
@@ -962,7 +1001,7 @@ def main():
                       help="Batch size for training")
     parser.add_argument("--learning_rate", type=float, default=0.001,
                       help="Initial learning rate")
-    parser.add_argument("--max_epochs", type=int, default=100,
+    parser.add_argument("--max_epochs", type=int, default=10,
                       help="Maximum number of training epochs")
     parser.add_argument("--compare_csv", type=str, default=None,
                       help="Path to CSV with predictions from another model for comparison")
