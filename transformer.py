@@ -52,7 +52,7 @@ class FeatureTransformer:
         df_out = pd.concat([df_pca, df_excl], axis=1)
         return df_out
 
-    def save(self, path="transformer.joblib"):
+    def save(self, path="models/transformers/transformer.joblib"):
         joblib.dump({
             "scaler": self.scaler,
             "pca": self.pca,
@@ -60,7 +60,7 @@ class FeatureTransformer:
             "exclude_cols": self.exclude_cols
         }, path)
 
-    def load(self, path="transformer.joblib"):
+    def load(self, path="models/transformers/transformer.joblib"):
         data = joblib.load(path)
         self.scaler = data["scaler"]
         self.pca = data["pca"]

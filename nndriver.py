@@ -23,7 +23,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-
 # ---------------------------------------------------------------------
 # ------------------ PyTorchNN Model ---------------------------------
 # ---------------------------------------------------------------------
@@ -217,7 +216,7 @@ class NNModel(nn.Module):
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
     
-    def save(self, path="nn_model.pt"):
+    def save(self, path="models/networks/nn_model.pt"):
         if hasattr(self, 'feature_extractor') and self.feature_extractor is not None:
             # Save both model state and metadata
             state_dict = self.state_dict()
@@ -230,7 +229,7 @@ class NNModel(nn.Module):
             }
             torch.save({'state_dict': state_dict, 'metadata': metadata}, path)
     
-    def load(self, path="nn_model.pt"):
+    def load(self, path="models/networks/nn_model.pt"):
         checkpoint = torch.load(path, map_location=self.device)
         
         # Load metadata
@@ -277,7 +276,7 @@ class NNTrainer:
             df_trans.to_csv(output_csv_path, index=False)
             print(f"[NNTrainer] Processed CSV saved to {output_csv_path}")
 
-        self.transformer.save("transformer.joblib")
+        self.transformer.save()
         print("[NNTrainer] Transformer saved.")
 
         # Prepare training data and split into train/test sets
@@ -291,7 +290,7 @@ class NNTrainer:
         self.nn_model.train_model(pd.DataFrame(X_train, columns=pc_cols), y_train,
                     input_cols=pc_cols, output_cols=out_cols)
 
-        self.nn_model.save("nn_model.pt")
+        self.nn_model.save()
         print("[NNTrainer] NN model saved.")
 
         mse_value = self.nn_model.evaluate(pd.DataFrame(X_test, columns=pc_cols), y_test)
@@ -317,9 +316,9 @@ class NNDriver:
 
     def inference_mode(self, csv_path, json_path):
         print("[NNDriver] Inference mode...")
-        self.transformer.load("transformer.joblib")
+        self.transformer.load()
         # Update to load PyTorch model
-        self.nn_model.load("nn_model.pt")
+        self.nn_model.load()
         
         data_dict = read_csv_data(csv_path)
         if data_dict is None:
@@ -353,9 +352,9 @@ class NNDriver:
 
     def realtime_mode(self, json_path, host='127.0.0.1', port=65432):
         print("[NNDriver] Realtime mode...")
-        self.transformer.load("transformer.joblib")
+        self.transformer.load()
         # Update to load PyTorch model
-        self.nn_model.load("nn_model.pt")
+        self.nn_model.load()
         
         track_data = self.processor.build_track_data(json_path)
 
@@ -416,4 +415,3 @@ class NNDriver:
                 df_all = pd.DataFrame(all_frames)
                 df_all.to_csv(self.output_csv, index = False)
                 print(f"[Realtime] Processed CSV saved to {self.output_csv}")
-
