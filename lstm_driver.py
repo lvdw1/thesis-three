@@ -1001,7 +1001,7 @@ def main():
                       help="Batch size for training")
     parser.add_argument("--learning_rate", type=float, default=0.001,
                       help="Initial learning rate")
-    parser.add_argument("--max_epochs", type=int, default=10,
+    parser.add_argument("--max_epochs", type=int, default=100,
                       help="Maximum number of training epochs")
     parser.add_argument("--compare_csv", type=str, default=None,
                       help="Path to CSV with predictions from another model for comparison")
