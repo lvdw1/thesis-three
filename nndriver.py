@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader, TensorDataset
 class NNModel(nn.Module):
     def __init__(self,
                  input_size=None,
-                 hidden_layer_sizes=(20,18,12,6),
+                 hidden_layer_sizes=(26,20,12,8),
                  output_size=3,
                  alpha_value=0.001,
                  learning_rate='adaptive',
@@ -400,7 +400,7 @@ class NNDriver:
                 df_trans = self.transformer.transform(df_features)
                 prediction = self.nn_model.predict(df_trans)[0]
                 st_pred, th_pred, br_pred = prediction
-                if br_pred < 0.2:
+                if br_pred < 0.05:
                     br_pred = 0.0
                 message = f"{st_pred},{th_pred},{br_pred}\n"
                 print(f"[Realtime] Sending: {message.strip()}")
