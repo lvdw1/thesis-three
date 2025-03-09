@@ -434,16 +434,35 @@ def compute_signed_distance_to_centerline(car_x, car_z, centerline_x, centerline
             best_signed_distance = sign * dist
     return best_signed_distance
 
-def compute_acceleration(time, vx, vy):
+def compute_acceleration(time, vx, vy, window_length=5, polyorder=2):
+    """
+    Compute smooth accelerations using the Savitzky–Golay filter.
+    Automatically adjusts the window_length if necessary.
+    """
     time = np.asarray(time)
     vx = np.asarray(vx)
     vy = np.asarray(vy)
-    dt = np.diff(time)
-    dt[dt < 1e-9] = 1e-9
-    dvx = np.diff(vx)
-    dvy = np.diff(vy)
-    ax = dvx / dt
-    ay = dvy / dt
-    ax = np.concatenate([ax, [ax[-1]]])
-    ay = np.concatenate([ay, [ay[-1]]])
+
+    # If there are not enough points, fallback to a simple finite difference
+    if len(time) < 3:
+        dt = np.diff(time)
+        dt[dt < 1e-9] = 1e-9  # avoid division by zero
+        dvx = np.diff(vx)
+        dvy = np.diff(vy)
+        ax = np.concatenate([dvx / dt, [0]])
+        ay = np.concatenate([dvy / dt, [0]])
+        return ax, ay
+
+    # Adjust window_length if it's too large relative to available data
+    if window_length > len(time):
+        window_length = len(time) if len(time) % 2 == 1 else len(time) - 1
+    if window_length < 3:
+        raise ValueError("window_length must be at least 3.")
+
+    dt_mean = np.mean(np.diff(time))
+    
+    # Compute smoothed derivatives using the Savitzky–Golay filter
+    ax = savgol_filter(vx, window_length, polyorder, deriv=1, delta=dt_mean)
+    ay = savgol_filter(vy, window_length, polyorder, deriv=1, delta=dt_mean)
+    
     return ax, ay
