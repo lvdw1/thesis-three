@@ -1,10 +1,10 @@
 import numpy as np
 import math
 import pandas as pd
-import json
 
 from utils import *
 
+from scipy.signal import savgol_filter
 
 class Processor:
     """
@@ -12,13 +12,14 @@ class Processor:
     Can process a single frame or an entire CSV file.
     Maintains realtime state for acceleration calculation.
     """
-    def __init__(self):
+    def __init__(self, buffer_size=20):
         self.reset_realtime_state()
+        self.buffer_size = buffer_size
 
     def reset_realtime_state(self):
-        self.last_time = None
-        self.last_vx = None
-        self.last_vy = None
+        self.time_buffer = []
+        self.vx_buffer = []
+        self.vy_buffer = []
 
     def process_frame(self, sensor_data, track_data):
         """
@@ -39,18 +40,20 @@ class Processor:
         x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_angle, shift_distance=2.5)
 
         # Compute local acceleration (using previous frame if available)
-        if self.last_time is None or self.last_vx is None or self.last_vy is None:
-            ax, ay = 0.0, 0.0
-        else:
-            time_arr = np.array([self.last_time, t])
-            vx_arr = np.array([self.last_vx, long_vel])
-            vy_arr = np.array([self.last_vy, lat_vel])
-            ax_arr, ay_arr = compute_acceleration(time_arr, vx_arr, vy_arr)
-            ax, ay = ax_arr[0], ay_arr[0]
+        self.time_buffer.append(t)
+        self.vx_buffer.append(long_vel)
+        self.vy_buffer.append(lat_vel)
 
-        self.last_time = t
-        self.last_vx = long_vel
-        self.last_vy = lat_vel
+        if len(self.time_buffer) > self.buffer_size:
+            self.time_buffer.pop(0)
+            self.vx_buffer.pop(0)
+            self.vy_buffer.pop(0)
+
+        if len(self.time_buffer) >= 3:
+            ax_arr, ay_arr = compute_acceleration(self.time_buffer, self.vx_buffer, self.vy_buffer, window_length = self.buffer_size)
+            ax, ay = ax_arr[-1], ay_arr[-1]
+        else:
+            ax, ay = 0.0, 0.0
 
         yaw_rad = math.radians(yaw_angle)
         brd, yrd = raycast_for_state(

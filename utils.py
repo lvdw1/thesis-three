@@ -6,6 +6,8 @@ import math
 import logging
 import numpy as np
 
+from scipy.signal import savgol_filter
+
 
 # ---------------------------------------------------------------------
 # ------------------ UTILITY / POSTPROCESSING CODE --------------------
