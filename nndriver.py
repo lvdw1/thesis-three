@@ -29,11 +29,11 @@ from torch.utils.data import DataLoader, TensorDataset
 class NNModel(nn.Module):
     def __init__(self,
                  input_size=None,
-                 hidden_layer_sizes=(64, 56, 48, 24, 16, 8),
+                 hidden_layer_sizes=(20,18,12,6),
                  output_size=3,
                  alpha_value=0.001,
                  learning_rate='adaptive',
-                 learning_rate_init=0.2,
+                 learning_rate_init=0.1,
                  max_iter=100000,
                  tol=1e-6,
                  random_state=42,
