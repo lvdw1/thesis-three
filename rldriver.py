@@ -18,13 +18,13 @@ class UnityCarEnv:
     
     Observation:
       Unity sends a 7-dimensional sensor vector:
-          [time, x_pos, y_pos, yaw, v_x, v_y, v_yaw]
+          [time, x_pos, z_pos, yaw, v_x, v_y, v_yaw]
       This raw data is processed (e.g., combined with track information and PCA-transformed)
     
     Action:
       A 3-dimensional vector: [steering, throttle, brake]
     """
-    def __init__(self, processor, transformer, host='127.0.0.1', port=65432):
+    def __init__(self, processor, transformer, json_path = 'sim/tracks/track17.json', host='127.0.0.1', port=65432):
         # Dimensions: raw sensor, processed state
         self.raw_state_dim = 7
         self.action_dim = 3  # [steering, throttle, brake]
@@ -34,11 +34,20 @@ class UnityCarEnv:
         
         self.host = host
         self.port = port
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((host, port))
+
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.bind((host, port))
+        self.server_socket.listen(5)
+
+        self.connection, addr = self.server_socket.accept()
+        print("Connected to Unity at", addr)
 
         self.processor = processor
         self.transformer = transformer
+
+        self.transformer.load()
+        print("tf loaded")
+        self.json_path = json_path
 
         print(f"[UnityCarEnv] Connected to Unity at {host}:{port}")
 
@@ -48,7 +57,7 @@ class UnityCarEnv:
         Replace this stub with your actual communication logic.
         """
         message = "reset\n"
-        self.socket.sendall(message.encode())
+        self.connection.sendall(message.encode())
         print("[UnityCarEnv] Sent reset command to Unity.")
 
     def send_action_to_unity(self, action):
@@ -57,26 +66,29 @@ class UnityCarEnv:
         Action is expected to be a 3-dimensional vector: [steering, throttle, brake].
         """
         message = f"{action[0]},{action[1]},{action[2]}\n"
-        self.socket.sendall(message.encode())
+        self.connection.sendall(message.encode())
         print(f"[UnityCarEnv] Sent action: {message.strip()}")
 
     def receive_observation_from_unity(self):
-        """
-        Receives raw sensor data from Unity.
-        Expected format (as a string): "time,x_pos,y_pos,yaw,v_x,v_y,v_yaw"
-        """
-        raw_data = self.socket.recv(1024).decode('utf-8').strip()
-        if not raw_data:
-            raise RuntimeError("No data received from Unity.")
+        buffer = ""
+        while "\n" not in buffer:
+            buffer += self.connection.recv(1024).decode('utf-8')
+        # Split by newline and take the first complete message.
+        line, remainder = buffer.split('\n', 1)
+        # Optionally, save 'remainder' for the next call.
+        raw_data = line.strip()
         fields = raw_data.split(',')
         sensor_data = {
-            "time": float(fields[0]),
-            "x_pos": float(fields[1]),
-            "y_pos": float(fields[2]),
-            "yaw": float(fields[3]),
-            "v_x": float(fields[4]),
-            "v_y": float(fields[5]),
-            "v_yaw": float(fields[6])
+            "time": time.time(),
+            "x_pos": float(fields[0]),
+            "z_pos": float(fields[1]),
+            "yaw_angle": -float(fields[2]) + 90,
+            "long_vel": float(fields[3]),
+            "lat_vel": float(fields[4]),
+            "yaw_rate": float(fields[5]),
+            "steering": None,
+            "throttle": None,
+            "brake": None
         }
         print(f"[UnityCarEnv] Received sensor data: {sensor_data}")
         return sensor_data
@@ -85,15 +97,14 @@ class UnityCarEnv:
         """
         Processes raw sensor data along with track data to produce a processed state vector.
         """
-        self.transformer.load()
-        track_data = self.processor.build_track_data(json_path)
+        track_data = self.processor.build_track_data(self.json_path)
         frame = self.processor.process_frame(sensor_data, track_data)
 
         df_single = pd.DataFrame([frame])
         df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
 
         df_trans = self.transformer.transform(df_features)
-        return df_trans
+        return df_trans.values
 
     def calculate_reward(self, sensor_data):
         """
@@ -131,7 +142,7 @@ class UnityCarEnv:
         """
         Closes the connection to Unity.
         """
-        self.socket.close()
+        self.connection.close()
         print("[UnityCarEnv] Connection closed.")
 
 class PPOTransformerPolicy(nn.Module):
@@ -155,6 +166,8 @@ class PPOTransformerPolicy(nn.Module):
         self.actor_head = nn.Linear(d_model, action_dim)
         # Critic head: outputs a scalar value for the state.
         self.critic_head = nn.Linear(d_model, 1)
+        # Learnable log standard deviation for the action distribution.
+        self.log_std = nn.Parameter(torch.zeros(action_dim))
     
     def forward(self, x):
         """
@@ -180,15 +193,17 @@ class PPOTransformerPolicy(nn.Module):
         
         action_mean = self.actor_head(x)  # [batch_size, action_dim]
         value = self.critic_head(x)       # [batch_size, 1]
-        return action_mean, value.squeeze(-1)
+        std = self.log_std.exp().expand_as(action_mean)
+        return action_mean, value.squeeze(-1), std
 
 class PPOAgent:
-    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, eps_clip=0.2, K_epochs=4):
+    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, eps_clip=0.2, K_epochs=4, entropy_coef=0.01):
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.gamma = gamma              # Discount factor
         self.eps_clip = eps_clip        # Clipping epsilon for PPO
         self.K_epochs = K_epochs        # Number of epochs per update
+        self.entropy_coef = entropy_coef
 
         self.policy = PPOTransformerPolicy(state_dim, action_dim)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
@@ -205,9 +220,7 @@ class PPOAgent:
         """
         state_tensor = torch.FloatTensor(state).unsqueeze(0)  # [1, state_dim]
         with torch.no_grad():
-            action_mean, value = self.policy(state_tensor)
-        # For continuous actions, use a Gaussian with a fixed std (or learn it)
-        std = torch.ones_like(action_mean) * 0.1
+            action_mean, value, std = self.policy(state_tensor)
         dist = distributions.Normal(action_mean, std)
         action = dist.sample()
         action_logprob = dist.log_prob(action).sum(dim=-1)
@@ -224,7 +237,7 @@ class PPOAgent:
         """
         Update the policy using the collected on-policy data.
         This includes computing discounted returns and advantages,
-        then optimizing the PPO clipped objective.
+        then optimizing the PPO clipped objective with an entropy bonus.
         """
         # Convert lists of transitions into tensors.
         states = torch.FloatTensor([t[0] for t in self.memory])
@@ -244,8 +257,7 @@ class PPOAgent:
         discounted_rewards = torch.FloatTensor(discounted_rewards)
         
         # Evaluate the current policy for the stored states.
-        action_means, state_values = self.policy(states)
-        std = torch.ones_like(action_means) * 0.1
+        action_means, state_values, std = self.policy(states)
         dist = distributions.Normal(action_means, std)
         logprobs = dist.log_prob(actions).sum(dim=-1)
         
@@ -255,8 +267,7 @@ class PPOAgent:
         
         # Optimize policy for K epochs.
         for _ in range(self.K_epochs):
-            # Recompute log probabilities and state values.
-            action_means, state_values = self.policy(states)
+            action_means, state_values, std = self.policy(states)
             dist = distributions.Normal(action_means, std)
             logprobs = dist.log_prob(actions).sum(dim=-1)
             ratios = torch.exp(logprobs - old_logprobs)
@@ -269,14 +280,62 @@ class PPOAgent:
             # Value function loss.
             value_loss = self.MseLoss(state_values, discounted_rewards)
             
-            # Total loss with a typical weight for value loss.
-            loss = policy_loss + 0.5 * value_loss
+            # Entropy bonus to encourage exploration.
+            entropy_loss = -self.entropy_coef * dist.entropy().mean()
+            
+            # Total loss.
+            loss = policy_loss + 0.5 * value_loss + entropy_loss
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
         
         # Clear memory after the update.
         self.memory = []
+
+
+def train_rl(num_episodes=10, max_steps=1000):
+    """
+    Training loop that interacts with Unity through the environment,
+    collects transitions, and updates the PPO agent.
+    
+    Note: Assumes that a valid json_path is defined and that the processor
+    and transformer modules are properly implemented.
+    """
+    # Assume processor and transformer are imported from your modules.
+    processor = Processor()
+    transformer = FeatureTransformer()
+    
+    # Create the environment.
+    env = UnityCarEnv(processor, transformer)
+    
+    # For processed states, assume the dimension is 121.
+    state_dim = 121
+    action_dim = env.action_dim  # 3
+    agent = PPOAgent(state_dim, action_dim)
+    
+    episode_rewards = []
+    
+    for ep in range(num_episodes):
+        state = env.reset()
+        done = False
+        ep_reward = 0
+        steps = 0
+        
+        while not done and steps < max_steps:
+            action, log_prob, value = agent.select_action(state)
+            next_state, reward, done = env.step(action)
+            agent.store_transition((state, action, log_prob, reward, done))
+            state = next_state
+            ep_reward += reward
+            steps += 1
+        
+        # Update policy after each episode.
+        agent.update()
+        episode_rewards.append(ep_reward)
+        print(f"Episode {ep+1}/{num_episodes}, Reward: {ep_reward}")
+    
+    env.close()
+    return episode_rewards
 
 if __name__ == "__main__":
     # To train the agent:
