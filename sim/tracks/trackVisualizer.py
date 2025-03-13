@@ -26,39 +26,62 @@ def parse_cone_data(json_file_path):
 
     return blue_cones, yellow_cones
 
-
-def plot_cones(blue_cones, yellow_cones, title="Cone Positions"):
+def plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Cone Positions"):
     """
-    Plots blue and yellow cones on a 2D plane.
+    Plots blue and yellow cones on a given matplotlib axis.
 
     Args:
+        ax (matplotlib.axes.Axes): The axis on which to plot the cones.
         blue_cones (list): List of (x, y) tuples for blue cones.
         yellow_cones (list): List of (x, y) tuples for yellow cones.
-        title (str): Title of the plot.
+        title (str): Title of the subplot.
     """
     # Extract x and y coordinates for blue cones
-    blue_x, blue_y = zip(*blue_cones) if blue_cones else ([], [])
+    if blue_cones:
+        blue_x, blue_y = zip(*blue_cones)
+    else:
+        blue_x, blue_y = [], []
+    
     # Extract x and y coordinates for yellow cones
-    yellow_x, yellow_y = zip(*yellow_cones) if yellow_cones else ([], [])
+    if yellow_cones:
+        yellow_x, yellow_y = zip(*yellow_cones)
+    else:
+        yellow_x, yellow_y = [], []
+    
+    # Plot blue and yellow cones on the provided axis
+    ax.scatter(blue_x, blue_y, c='blue', label='Blue Cones', s=30)
+    ax.scatter(yellow_x, yellow_y, c='yellow', label='Yellow Cones', s=30)
+    
+    # Customize the axis
+    ax.set_title(title)
+    ax.set_xlabel("X Position")
+    ax.set_ylabel("Y Position")
+    ax.legend()
+    ax.grid(True)
+    ax.axis('equal')
 
-    # Plot blue cones
-    plt.scatter(blue_x, blue_y, c='blue', label='Blue Cones', s=30)
-    # Plot yellow cones
-    plt.scatter(yellow_x, yellow_y, c='yellow', label='Yellow Cones', s=30)
+def plot_four_tracks(json_files):
+    """
+    Plots cone data from four different JSON files in a 2x2 grid of subplots.
 
-    # Add labels and legend
-    plt.title(title)
-    plt.xlabel("X Position")
-    plt.ylabel("Y Position")
-    plt.legend()
-    plt.grid(True)
-    plt.axis('equal')  # Keep the scale equal for proper visualization
-
-    # Show the plot
+    Args:
+        json_files (list): List of four JSON file paths.
+    """
+    if len(json_files) != 4:
+        raise ValueError("Exactly four JSON files must be provided.")
+    
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    axes = axes.flatten()  # flatten to easily iterate through axes
+    
+    for i, json_file in enumerate(json_files):
+        blue_cones, yellow_cones = parse_cone_data(json_file)
+        plot_cones_on_axis(axes[i], blue_cones, yellow_cones, title=f"Track {i+1}")
+    
+    plt.tight_layout()
     plt.show()
 
-# Assuming you have already parsed the cones from your JSON file
-blue_cones, yellow_cones = parse_cone_data("squiggle.json")
-plot_cones(blue_cones, yellow_cones)
+# List of four JSON files (modify the filenames as needed)
+json_files = ["track17.json", "track18.json", "track19.json", "track20.json"]
 
-
+# Plot the four tracks
+plot_four_tracks(json_files)
