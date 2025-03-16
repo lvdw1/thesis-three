@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 import pandas as pd
-from collections import deque
 import socket
 import time
 
@@ -12,6 +11,12 @@ from utils import *
 from processor import *
 from transformer import *
 from nndriver import NNModel
+
+def compute_reward(state, next_state):
+    # Replace with your actual reward logic.
+    progress = next_state.get("long_vel", 0.0)
+    penalty = 0.0
+    return progress - penalty
 
 class UnityEnv:
     """
@@ -31,9 +36,7 @@ class UnityEnv:
         buffer = ""
         while "\n" not in buffer:
             buffer += self.client_socket.recv(1024).decode('utf-8')
-        # split by newline and take the first complete message.
         line, remainder = buffer.split('\n', 1)
-        # optionally, save 'remainder' for the next call.
         raw_data = line.strip()
         fields = raw_data.split(',')
         state = {
@@ -48,16 +51,10 @@ class UnityEnv:
             "throttle": 0.0,
             "brake": 0.0
         }
-        # print(f"[UnityEnv] received sensor data: {state}")
         return state
 
-
     def send_command(self, steering, throttle, brake):
-        """
-        Sends command (steering, throttle, brake) back to Unity.
-        """
         message = f"{steering},{throttle},{brake}\n"
-        # print(f"[UnityEnv] Sending: {message.strip()}")
         self.client_socket.sendall(message.encode())
 
     def close(self):
@@ -67,71 +64,39 @@ class UnityEnv:
 
 class Actor:
     """
-    Loads a pretrained NNModel and uses it to produce control outputs (steering, throttle, brake)
-    based on sensor data coming from Unity. It leverages the Processor and Transformer to prepare
-    the input data.
+    Wraps a pretrained NNModel and its preprocessing to produce control outputs.
     """
     def __init__(self, processor, transformer, model_path=None, track_data=None, output_csv=None):
         self.output_csv = output_csv
-        
-        # Initialize processor and transformer instances.
         self.processor = processor
         self.transformer = transformer
         self.transformer.load()
-        
-        # Instantiate NNModel without requiring input_size. The NNModel will be properly initialized
-        # when we load the saved model.
         self.nn_model = NNModel()
-        self.nn_model.load(model_path)  # Load model state and metadata
-        self.nn_model.eval()  # Set to evaluation mode
-        
-        # Build track data if provided.
+        self.nn_model.load(model_path)
+        self.nn_model.eval()
         self.track_data = track_data
 
     def process(self, state):
-        """
-        Processes the raw sensor data once and returns the transformed features.
-        """
-        # Process the sensor data to generate a feature frame.
         frame = self.processor.process_frame(state, self.track_data)
-        # Create a DataFrame from the frame.
         df_single = pd.DataFrame([frame])
-        # Drop columns that are not used as input features.
-        df_features = df_single.drop(columns=["time", "x_pos", "z_pos", "yaw_angle"])
-        # Apply the transformer to process features.
+        df_features = df_single.drop(columns=["time", "x_pos", "z_pos", "yaw_angle", "steering", "throttle", "brake"], errors='ignore')
         df_trans = self.transformer.transform(df_features)
         return df_trans.astype(float)
 
     def act(self, state, preprocessed=None):
-        """
-        Given a sensor data dictionary, uses the (preprocessed) features to return a tuple of
-        (steering, throttle, brake).
-        """
         if preprocessed is None:
             preprocessed = self.process(state)
-        # Use the NNModel's predict method to obtain outputs.
-        # Replace the undefined 'df_trans' with the 'preprocessed' DataFrame.
         prediction = self.nn_model.predict(preprocessed)[0]
         st_pred, th_pred, br_pred = prediction
-        
-        # Optionally apply a threshold to brake.
         if br_pred < 0.05:
             br_pred = 0.0
-        
         return st_pred, th_pred, br_pred
 
 class Critic(nn.Module):
     """
-    A simple feedforward network to estimate the state value.
-    Expects preprocessed input features (e.g. from the transformer)
-    and outputs a single scalar value.
+    A simple feedforward network to estimate state value.
     """
     def __init__(self, input_size, hidden_layer_sizes=(20, 20)):
-        """
-        Args:
-            input_size (int): Number of input features.
-            hidden_layer_sizes (tuple): Sizes of the hidden layers.
-        """
         super(Critic, self).__init__()
         layers = []
         last_size = input_size
@@ -139,61 +104,163 @@ class Critic(nn.Module):
             layers.append(nn.Linear(last_size, hidden))
             layers.append(nn.ReLU())
             last_size = hidden
-        # Final layer outputs a single value (state value estimate)
         layers.append(nn.Linear(last_size, 1))
         self.value_network = nn.Sequential(*layers)
 
     def forward(self, x):
-        """
-        Forward pass that outputs the state value.
-        Args:
-            x (torch.Tensor): Input tensor of shape (batch_size, input_size).
-        Returns:
-            torch.Tensor: Predicted value of shape (batch_size, 1).
-        """
         return self.value_network(x)
 
+class PPO:
+    def __init__(self, actor, critic, actor_optimizer, critic_optimizer,
+                 clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.01,
+                 max_grad_norm=0.5, num_epochs=10, batch_size=64,
+                 gamma=0.99, lam=0.95, action_std=0.1, device='cpu'):
+        self.actor = actor
+        self.critic = critic
+        self.actor_optimizer = actor_optimizer
+        self.critic_optimizer = critic_optimizer
+        self.clip_param = clip_param
+        self.value_loss_coef = value_loss_coef
+        self.entropy_coef = entropy_coef
+        self.max_grad_norm = max_grad_norm
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.lam = lam
+        self.action_std = action_std
+        self.device = device
+
+    def evaluate_actions(self, states, actions):
+        mean_actions = self.actor.nn_model(states)
+        dist = torch.distributions.Normal(mean_actions, self.action_std)
+        log_probs = dist.log_prob(actions).sum(dim=-1)
+        entropy = dist.entropy().sum(dim=-1)
+        values = self.critic(states).squeeze(-1)
+        return log_probs, entropy, values
+
+    def compute_gae(self, rewards, values, dones, next_value):
+        gae = 0
+        returns = []
+        values = values + [next_value]
+        for step in reversed(range(len(rewards))):
+            delta = rewards[step] + self.gamma * values[step+1] * (1 - dones[step]) - values[step]
+            gae = delta + self.gamma * self.lam * (1 - dones[step]) * gae
+            returns.insert(0, gae + values[step])
+        return returns
+
+    def update(self, rollouts):
+        states = torch.FloatTensor(np.array(rollouts['states'])).to(self.device)
+        actions = torch.FloatTensor(np.array(rollouts['actions'])).to(self.device)
+        old_log_probs = torch.FloatTensor(np.array(rollouts['log_probs'])).to(self.device)
+        returns = torch.FloatTensor(np.array(rollouts['returns'])).to(self.device)
+        advantages = torch.FloatTensor(np.array(rollouts['advantages'])).to(self.device)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        for _ in range(self.num_epochs):
+            indices = np.arange(len(states))
+            np.random.shuffle(indices)
+            for start in range(0, len(states), self.batch_size):
+                end = start + self.batch_size
+                mb_inds = indices[start:end]
+                mb_states = states[mb_inds]
+                mb_actions = actions[mb_inds]
+                mb_old_log_probs = old_log_probs[mb_inds]
+                mb_returns = returns[mb_inds]
+                mb_advantages = advantages[mb_inds]
+
+                log_probs, entropy, values = self.evaluate_actions(mb_states, mb_actions)
+                ratio = torch.exp(log_probs - mb_old_log_probs)
+                surr1 = ratio * mb_advantages
+                surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * mb_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+                value_loss = nn.MSELoss()(values, mb_returns)
+                loss = policy_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+
+                self.actor_optimizer.zero_grad()
+                loss.backward(retain_graph=True)
+                nn.utils.clip_grad_norm_(self.actor.nn_model.parameters(), self.max_grad_norm)
+                self.actor_optimizer.step()
+
+                self.critic_optimizer.zero_grad()
+                value_loss.backward()
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+                self.critic_optimizer.step()
+
+    def train(self, env, rollout_length=2048):
+        rollouts = {'states': [], 'actions': [], 'log_probs': [],
+                    'rewards': [], 'dones': [], 'values': []}
+        state = env.receive_state()
+        preprocessed = self.actor.process(state)
+        state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
+        
+        for step in range(rollout_length):
+            with torch.no_grad():
+                mean_action = self.actor.nn_model(state_tensor)
+                dist = torch.distributions.Normal(mean_action, self.action_std)
+                action = dist.sample()
+                log_prob = dist.log_prob(action).sum(dim=-1)
+                value = self.critic(state_tensor).squeeze(-1)
+            action = action.squeeze(0)
+            env.send_command(action[0].item(), action[1].item(), action[2].item())
+            next_state = env.receive_state()
+            reward = compute_reward(state, next_state)
+            done = 0  # Adjust if your environment signals episode end.
+            
+            rollouts['states'].append(state_tensor.cpu().numpy())
+            rollouts['actions'].append(action.cpu().numpy())
+            rollouts['log_probs'].append(log_prob.cpu().numpy())
+            rollouts['rewards'].append(reward)
+            rollouts['dones'].append(done)
+            rollouts['values'].append(value.item())
+
+            state = next_state
+            preprocessed = self.actor.process(state)
+            state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
+
+        with torch.no_grad():
+            next_state_tensor = torch.FloatTensor(self.actor.process(state).values.astype(np.float32)).to(self.device)
+            next_value = self.critic(next_state_tensor).item()
+        
+        advantages = self.compute_gae(rollouts['rewards'], rollouts['values'], rollouts['dones'], next_value)
+        returns = advantages  # In practice, add the baseline values.
+        rollouts['advantages'] = advantages
+        rollouts['returns'] = returns
+
+        self.update(rollouts)
+
 if __name__ == "__main__":
-
-    unity = UnityEnv(host='127.0.0.1', port = 65432)
-
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    
+    unity = UnityEnv(host='127.0.0.1', port=65432)
     processor = Processor()
     transformer = FeatureTransformer()
-
-    actor = Actor(processor, transformer, model_path="models/networks/nn_model.pt")
-
     track_data = processor.build_track_data("sim/tracks/track17.json")
-
+    
+    actor = Actor(processor, transformer, model_path="models/networks/nn_model.pt", track_data=track_data)
+    actor.nn_model.to(device)
+    
     sample_state = unity.receive_state()
     frame_sample = processor.process_frame(sample_state, track_data)
     df_sample = pd.DataFrame([frame_sample])
-    df_features_sample = df_sample.drop(columns=["time", "x_pos", "z_pos", "yaw_angle"])
-    df_trans_sample = transformer.transform(df_features_sample)
+    df_features_sample = df_sample.drop(columns=["time", "x_pos", "z_pos", "yaw_angle", "steering", "throttle", "brake"], errors='ignore')
+    df_trans_sample = transformer.transform(df_features_sample).astype(float)
     input_size = df_trans_sample.shape[1]
+    print("Input feature size:", input_size)
 
-    critic = Critic(input_size=input_size, hidden_layer_sizes=(20,20))
-    critic_optimizer = optim.Adam(critic.parameters(), lr=0.001)
+    critic = Critic(input_size=input_size, hidden_layer_sizes=(20,20)).to(device)
+    actor_optimizer = optim.Adam(actor.nn_model.parameters(), lr=3e-4)
+    critic_optimizer = optim.Adam(critic.parameters(), lr=3e-4)
 
+    ppo_agent = PPO(actor, critic, actor_optimizer, critic_optimizer, 
+                    clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.01,
+                    max_grad_norm=0.5, num_epochs=10, batch_size=64,
+                    gamma=0.99, lam=0.95, action_std=0.1, device=device)
+    
     try:
-        previous_time = time.time()
         while True:
-            state = unity.receive_state()
-            if state is None:
-                break
-
-            frame = processor.process_frame(state, track_data)
-            df_single = pd.DataFrame([frame])
-            df_features = df_single.drop(columns=["time", "x_pos", "z_pos", "yaw_angle"])
-            df_trans = transformer.transform(df_features)
-
-            features_tensor = torch.FloatTensor(df_trans.values.astype(np.float32))
-
-            steering, throttle, brake = actor.act(state, preprocessed=df_trans)
-            with torch.no_grad():
-                state_value = critic(features_tensor)
-            print(f"State value: {state_value.item():.4f}")
-
-            unity.send_command(steering, throttle, brake)
+            print("Collecting rollouts and updating policy...")
+            ppo_agent.train(unity, rollout_length=2048)
+            # Optionally: add evaluation code here to monitor progress.
     except Exception as e:
         print(f"[Main] Error: {e}")
     finally:
