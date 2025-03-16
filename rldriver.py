@@ -14,23 +14,23 @@ from transformer import *
 
 class UnityCarEnv:
     """
-    Environment for communicating with the Unity simulator.
+    environment for communicating with the unity simulator.
     
-    Observation:
-      Unity sends a 7-dimensional sensor vector:
+    observation:
+      unity sends a 7-dimensional sensor vector:
           [time, x_pos, z_pos, yaw, v_x, v_y, v_yaw]
-      This raw data is processed (e.g., combined with track information and PCA-transformed)
+      this raw data is processed (e.g., combined with track information and pca-transformed)
     
-    Action:
-      A 3-dimensional vector: [steering, throttle, brake]
+    action:
+      a 3-dimensional vector: [steering, throttle, brake]
     """
     def __init__(self, processor, transformer, json_path = 'sim/tracks/track17.json', host='127.0.0.1', port=65432):
-        # Dimensions: raw sensor, processed state
+        # dimensions: raw sensor, processed state
         self.raw_state_dim = 7
         self.action_dim = 3  # [steering, throttle, brake]
         self.max_episode_steps = 1000
         self.current_step = 0
-        self.state = None  # Actual state from Unity will be stored here
+        self.state = None  # actual state from unity will be stored here
         
         self.host = host
         self.port = port
@@ -40,7 +40,7 @@ class UnityCarEnv:
         self.server_socket.listen(5)
 
         self.connection, addr = self.server_socket.accept()
-        print("Connected to Unity at", addr)
+        print("connected to unity at", addr)
 
         self.processor = processor
         self.transformer = transformer
@@ -49,33 +49,33 @@ class UnityCarEnv:
         print("tf loaded")
         self.json_path = json_path
 
-        print(f"[UnityCarEnv] Connected to Unity at {host}:{port}")
+        print(f"[unitycarenv] connected to unity at {host}:{port}")
 
     def send_reset_to_unity(self):
         """
-        Sends a reset command to Unity to restart the simulation.
-        Replace this stub with your actual communication logic.
+        sends a reset command to unity to restart the simulation.
+        replace this stub with your actual communication logic.
         """
         message = "reset\n"
         self.connection.sendall(message.encode())
-        print("[UnityCarEnv] Sent reset command to Unity.")
+        print("[unitycarenv] sent reset command to unity.")
 
     def send_action_to_unity(self, action):
         """
-        Sends the action command to Unity.
-        Action is expected to be a 3-dimensional vector: [steering, throttle, brake].
+        sends the action command to unity.
+        action is expected to be a 3-dimensional vector: [steering, throttle, brake].
         """
         message = f"{action[0]},{action[1]},{action[2]}\n"
         self.connection.sendall(message.encode())
-        print(f"[UnityCarEnv] Sent action: {message.strip()}")
+        print(f"[unitycarenv] sent action: {message.strip()}")
 
     def receive_observation_from_unity(self):
         buffer = ""
         while "\n" not in buffer:
             buffer += self.connection.recv(1024).decode('utf-8')
-        # Split by newline and take the first complete message.
+        # split by newline and take the first complete message.
         line, remainder = buffer.split('\n', 1)
-        # Optionally, save 'remainder' for the next call.
+        # optionally, save 'remainder' for the next call.
         raw_data = line.strip()
         fields = raw_data.split(',')
         sensor_data = {
@@ -90,12 +90,12 @@ class UnityCarEnv:
             "throttle": None,
             "brake": None
         }
-        print(f"[UnityCarEnv] Received sensor data: {sensor_data}")
+        print(f"[unitycarenv] received sensor data: {sensor_data}")
         return sensor_data
 
     def process_unity_observation(self, sensor_data):
         """
-        Processes raw sensor data along with track data to produce a processed state vector.
+        processes raw sensor data along with track data to produce a processed state vector.
         """
         track_data = self.processor.build_track_data(self.json_path)
         frame = self.processor.process_frame(sensor_data, track_data)
@@ -104,30 +104,30 @@ class UnityCarEnv:
         df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
 
         df_trans = self.transformer.transform(df_features)
-        return df_trans.values
+        return df_trans.values[0].astype(np.float32)
 
     def calculate_reward(self, sensor_data):
         """
-        Computes reward based on sensor data.
-        Dummy function for the moment
+        computes reward based on sensor data.
+        dummy function for the moment
         """
         reward = abs(sensor_data["v_x"])
         return reward
 
     def reset(self):
         """
-        Resets the Unity simulation and returns the initial processed state.
+        resets the unity simulation and returns the initial processed state.
         """
         self.current_step = 0
         self.send_reset_to_unity()
-        time.sleep(0.1)  # Allow time for Unity to process the reset.
+        time.sleep(0.1)  # allow time for unity to process the reset.
         sensor_data = self.receive_observation_from_unity()
         self.state = self.process_unity_observation(sensor_data)
         return self.state
 
     def step(self, action):
         """
-        Sends an action to Unity, receives the next observation, computes the reward,
+        sends an action to unity, receives the next observation, computes the reward,
         and returns the new state along with the done flag and diagnostic info.
         """
         self.current_step += 1
@@ -140,10 +140,10 @@ class UnityCarEnv:
 
     def close(self):
         """
-        Closes the connection to Unity.
+        closes the connection to unity.
         """
         self.connection.close()
-        print("[UnityCarEnv] Connection closed.")
+        print("[unitycarenv] connection closed.")
 
 class PPOTransformerPolicy(nn.Module):
     def __init__(self, state_dim, action_dim, d_model=192, nhead=4, num_layers=4, mlp_ratio=2.0, context_length=5):
@@ -152,9 +152,9 @@ class PPOTransformerPolicy(nn.Module):
         self.action_dim = action_dim
         self.context_length = context_length
         
-        # Embed the state into a d_model-dimensional space.
+        # embed the state into a d_model-dimensional space.
         self.input_fc = nn.Linear(state_dim, d_model)
-        # Learnable positional embeddings.
+        # learnable positional embeddings.
         self.pos_embedding = nn.Parameter(torch.zeros(context_length, d_model))
         nn.init.normal_(self.pos_embedding, std=0.02)
         
@@ -162,17 +162,17 @@ class PPOTransformerPolicy(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=feedforward_dim)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # Actor head: produces the mean of the Gaussian for the action.
+        # actor head: produces the mean of the gaussian for the action.
         self.actor_head = nn.Linear(d_model, action_dim)
-        # Critic head: outputs a scalar value for the state.
+        # critic head: outputs a scalar value for the state.
         self.critic_head = nn.Linear(d_model, 1)
-        # Learnable log standard deviation for the action distribution.
+        # learnable log standard deviation for the action distribution.
         self.log_std = nn.Parameter(torch.zeros(action_dim))
     
     def forward(self, x):
         """
         x: [batch_size, state_dim]
-        We replicate the state to form a sequence of fixed length (context_length)
+        we replicate the state to form a sequence of fixed length (context_length)
         and then process it through the transformer.
         """
         if len(x.shape) == 1:
@@ -184,7 +184,7 @@ class PPOTransformerPolicy(nn.Module):
             x = x.repeat(1, self.context_length, 1)  # [batch_size, context_length, state_dim]
             x = x.transpose(0, 1)  # [context_length, batch_size, state_dim]
         else:
-            raise ValueError("Unsupported input shape")
+            raise valueerror("unsupported input shape")
         
         x = self.input_fc(x)  # [context_length, batch_size, d_model]
         x = x + self.pos_embedding.unsqueeze(1)  # add positional embedding
