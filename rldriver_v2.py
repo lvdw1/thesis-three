@@ -31,30 +31,40 @@ class UnityEnv:
         print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
         self.client_socket, self.addr = self.server_socket.accept()
         print(f"[UnityEnv] Connection from {self.addr}")
+        self.buffer = ""
 
     def receive_state(self):
-        buffer = ""
-        while "\n" not in buffer:
-            buffer += self.client_socket.recv(1024).decode('utf-8')
-        line, remainder = buffer.split('\n', 1)
-        raw_data = line.strip()
-        fields = raw_data.split(',')
-        state = {
-            "time": time.time(),
-            "x_pos": float(fields[0]),
-            "z_pos": float(fields[1]),
-            "yaw_angle": -float(fields[2]) + 90,
-            "long_vel": float(fields[3]),
-            "lat_vel": float(fields[4]),
-            "yaw_rate": float(fields[5]),
-            "steering": 0.0,
-            "throttle": 0.0,
-            "brake": 0.0
-        }
-        return state
+        while "\n" not in self.buffer:
+            data = self.client_socket.recv(1024).decode('utf-8')
+            if not data:
+                break
+            self.buffer += data
+        if "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            raw_data = line.strip()
+            fields = raw_data.split(',')
+            if len(fields) < 6:
+                raise ValueError("Incomplete state received, not enough fields.")
+            state = {
+                "time": time.time(),
+                "x_pos": float(fields[0]),
+                "z_pos": float(fields[1]),
+                "yaw_angle": -float(fields[2]) + 90,
+                "long_vel": float(fields[3]),
+                "lat_vel": float(fields[4]),
+                "yaw_rate": float(fields[5]),
+                "steering": 0.0,
+                "throttle": 0.0,
+                "brake": 0.0
+            }
+            return state
+        else:
+            raise RuntimeError("No complete message received.")
+            
+
 
     def send_command(self, steering, throttle, brake):
-        message = f"{steering},{throttle},{brake}\n"
+        message = f"{steering},{0.2},{0.0}\n"
         self.client_socket.sendall(message.encode())
 
     def close(self):
@@ -191,7 +201,7 @@ class PPO:
                     'rewards': [], 'dones': [], 'values': []}
         state = env.receive_state()
         preprocessed = self.actor.process(state)
-        state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
+        state_tensor = torch.FloatTensor(preprocessed.values).to(self.device)
         
         for step in range(rollout_length):
             with torch.no_grad():
@@ -206,7 +216,7 @@ class PPO:
             reward = compute_reward(state, next_state)
             done = 0  # Adjust if your environment signals episode end.
             
-            rollouts['states'].append(state_tensor.cpu().numpy())
+            rollouts['states'].append(state_tensor.cpu().squeeze(0).numpy())
             rollouts['actions'].append(action.cpu().numpy())
             rollouts['log_probs'].append(log_prob.cpu().numpy())
             rollouts['rewards'].append(reward)
@@ -217,6 +227,11 @@ class PPO:
             preprocessed = self.actor.process(state)
             state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
 
+        print("[DEBUG] Rollouts collected:")
+        print(f"States count: {len(rollouts['states'])}")
+        print(f"Actions count: {len(rollouts['actions'])}")
+        print(f"Rewards count: {len(rollouts['rewards'])}")
+        print(f"Values count: {len(rollouts['values'])}")
         with torch.no_grad():
             next_state_tensor = torch.FloatTensor(self.actor.process(state).values.astype(np.float32)).to(self.device)
             next_value = self.critic(next_state_tensor).item()
@@ -259,7 +274,7 @@ if __name__ == "__main__":
     try:
         while True:
             print("Collecting rollouts and updating policy...")
-            ppo_agent.train(unity, rollout_length=2048)
+            ppo_agent.train(unity, rollout_length=100)
             # Optionally: add evaluation code here to monitor progress.
     except Exception as e:
         print(f"[Main] Error: {e}")
