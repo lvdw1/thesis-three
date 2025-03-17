@@ -29,7 +29,7 @@ def calibrate_angle(device):
     data = device.read(64)
     if data:
         initial_steering = data[42:45]
-        initial_steering_angle = int.from_bytes(initial_steering, byteorder='little', signed=True)
+        initial_steering_angle = abs(int.from_bytes(initial_steering, byteorder='little', signed=True))
 
         initial_brake = data[48:51]
         initial_brake_angle = int.from_bytes(initial_brake, byteorder='little', signed=True)
@@ -73,7 +73,7 @@ def process_hid_input(device, calibration_offsets):
         if np.abs(brake) != 0.0:
             throttle = 0.0
 
-        return steering_angle, throttle, brake
+        return steering_angle, throttle*2.60, brake
     return None
 
 def main():
