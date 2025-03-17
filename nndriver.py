@@ -369,16 +369,13 @@ class NNDriver:
         all_frames = []
 
         try:
-            previous_time = time.time()
             while True:
-                current_time = time.time()
-                print(current_time- previous_time)
-                previous_time = time.time()
                 raw_data = client_socket.recv(1024).decode('utf-8').strip()
                 if not raw_data:
                     break
-                fields = raw_data.split(',')
-                # print(fields)
+                messages = raw_data.splitlines()
+                latest = messages[-1].strip()
+                fields = latest.split(',')
                 sensor_data = {
                     "time": time.time(),
                     "x_pos": float(fields[0]),
