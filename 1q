@@ -13,10 +13,10 @@ from transformer import *
 from nndriver import NNModel
 
 def compute_reward(state, next_state):
-    progress = next_state["long_vel"].item()
-
-    dist_yel = next_state["yr12"].item()
-    dist_bl = next_state["br12"].item()
+    print(next_state["yr12"])
+    progress = next_state["long_vel"]
+    dist_yel = next_state["yr12"]
+    dist_bl = next_state["br12"]
 
     if dist_yel > 5.0 or dist_bl > 5.0:
         penalty = 20.0
@@ -24,6 +24,8 @@ def compute_reward(state, next_state):
     else:
         penalty = 0.0
 
+    print(progress - penalty)
+    time.sleep(1)
     return progress - penalty
 
 class UnityEnv:
@@ -219,6 +221,7 @@ class PPO:
             action = action.squeeze(0)
             env.send_command(action[0].item(), action[1].item(), action[2].item())
             next_state = env.receive_state()
+            reward = compute_reward(features, next_state)
             done = 0  # Adjust if your environment signals episode end.
             
             rollouts['states'].append(state_tensor.cpu().squeeze(0).numpy())
@@ -279,7 +282,7 @@ if __name__ == "__main__":
     try:
         while True:
             print("Collecting rollouts and updating policy...")
-            ppo_agent.train(unity, rollout_length=2048)
+            ppo_agent.train(unity, rollout_length=100)
             # Optionally: add evaluation code here to monitor progress.
     except Exception as e:
         print(f"[Main] Error: {e}")
