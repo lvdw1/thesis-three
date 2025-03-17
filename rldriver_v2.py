@@ -60,11 +60,9 @@ class UnityEnv:
             return state
         else:
             raise RuntimeError("No complete message received.")
-            
-
 
     def send_command(self, steering, throttle, brake):
-        message = f"{steering},{0.2},{0.0}\n"
+        message = f"{steering},{throttle},{brake}\n"
         self.client_socket.sendall(message.encode())
 
     def close(self):
@@ -242,6 +240,7 @@ class PPO:
         rollouts['returns'] = returns
 
         self.update(rollouts)
+        torch.save(actor.nn_model.state_dict(), "models/networks/updated_nn_model.pt")
 
 if __name__ == "__main__":
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
