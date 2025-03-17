@@ -13,9 +13,16 @@ from transformer import *
 from nndriver import NNModel
 
 def compute_reward(state, next_state):
-    # Replace with your actual reward logic.
     progress = next_state.get("long_vel", 0.0)
-    penalty = 0.0
+    dist_yel = next_state.get("yr12", pd.Series([0.0])).item()  # or .iloc[0]
+    dist_bl = next_state.get("br12", pd.Series([0.0])).item()   # or .iloc[0]
+    
+    if dist_yel > 5.0 or dist_bl > 5.0:
+        penalty = 20.0
+        print("Left the track!")
+    else:
+        penalty = 0.0
+
     return progress - penalty
 
 class UnityEnv:
@@ -89,7 +96,7 @@ class Actor:
         df_single = pd.DataFrame([frame])
         df_features = df_single.drop(columns=["time", "x_pos", "z_pos", "yaw_angle", "steering", "throttle", "brake"], errors='ignore')
         df_trans = self.transformer.transform(df_features)
-        return df_trans.astype(float)
+        return df_features.astype(float), df_trans.astype(float)
 
     def act(self, state, preprocessed=None):
         if preprocessed is None:
@@ -181,7 +188,7 @@ class PPO:
                 surr1 = ratio * mb_advantages
                 surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * mb_advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = nn.MSELoss()(values, mb_returns)
+                value_loss = nn.MSELoss()(values, mb_returns.squeeze(-1))
                 loss = policy_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
 
                 self.actor_optimizer.zero_grad()
@@ -198,7 +205,7 @@ class PPO:
         rollouts = {'states': [], 'actions': [], 'log_probs': [],
                     'rewards': [], 'dones': [], 'values': []}
         state = env.receive_state()
-        preprocessed = self.actor.process(state)
+        features, preprocessed = self.actor.process(state)
         state_tensor = torch.FloatTensor(preprocessed.values).to(self.device)
         
         for step in range(rollout_length):
@@ -211,27 +218,26 @@ class PPO:
             action = action.squeeze(0)
             env.send_command(action[0].item(), action[1].item(), action[2].item())
             next_state = env.receive_state()
-            reward = compute_reward(state, next_state)
+            reward = compute_reward(features, next_state)
             done = 0  # Adjust if your environment signals episode end.
             
             rollouts['states'].append(state_tensor.cpu().squeeze(0).numpy())
             rollouts['actions'].append(action.cpu().numpy())
             rollouts['log_probs'].append(log_prob.cpu().numpy())
-            rollouts['rewards'].append(reward)
             rollouts['dones'].append(done)
             rollouts['values'].append(value.item())
 
             state = next_state
-            preprocessed = self.actor.process(state)
+            features_new, preprocessed = self.actor.process(state)
+
+            reward = compute_reward(features, features_new)
+            rollouts['rewards'].append(reward)
+
+            features = features_new
             state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
 
-        print("[DEBUG] Rollouts collected:")
-        print(f"States count: {len(rollouts['states'])}")
-        print(f"Actions count: {len(rollouts['actions'])}")
-        print(f"Rewards count: {len(rollouts['rewards'])}")
-        print(f"Values count: {len(rollouts['values'])}")
         with torch.no_grad():
-            next_state_tensor = torch.FloatTensor(self.actor.process(state).values.astype(np.float32)).to(self.device)
+            next_state_tensor = torch.FloatTensor(self.actor.process(state)[1].values.astype(np.float32)).to(self.device)
             next_value = self.critic(next_state_tensor).item()
         
         advantages = self.compute_gae(rollouts['rewards'], rollouts['values'], rollouts['dones'], next_value)
