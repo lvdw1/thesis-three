@@ -4,81 +4,48 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 import pandas as pd
-from collections import deque
 import socket
 import time
 
 from utils import *
 from processor import *
 from transformer import *
+from nndriver import NNModel
 
-class UnityCarEnv:
+def compute_reward(state, next_state):
+    progress = next_state["long_vel"].item()
+
+    dist_yel = next_state["yr12"].item()
+    dist_bl = next_state["br12"].item()
+
+    if dist_yel > 5.0 or dist_bl > 5.0:
+        penalty = 20.0
+    else:
+        penalty = 0.0
+    return progress - penalty
+
+class UnityEnv:
     """
-    environment for communicating with the unity simulator.
-    
-    observation:
-      unity sends a 7-dimensional sensor vector:
-          [time, x_pos, z_pos, yaw, v_x, v_y, v_yaw]
-      this raw data is processed (e.g., combined with track information and pca-transformed)
-    
-    action:
-      a 3-dimensional vector: [steering, throttle, brake]
+    Handles communication with Unity.
     """
-    def __init__(self, processor, transformer, json_path = 'sim/tracks/track17.json', host='127.0.0.1', port=65432):
-        # dimensions: raw sensor, processed state
-        self.raw_state_dim = 7
-        self.action_dim = 3  # [steering, throttle, brake]
-        self.max_episode_steps = 1000
-        self.current_step = 0
-        self.state = None  # actual state from unity will be stored here
-        
+    def __init__(self, host='127.0.0.1', port=65432):
         self.host = host
         self.port = port
-
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind((host, port))
+        self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
+        print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
+        self.client_socket, self.addr = self.server_socket.accept()
+        print(f"[UnityEnv] Connection from {self.addr}")
 
-        self.connection, addr = self.server_socket.accept()
-        print("connected to unity at", addr)
-
-        self.processor = processor
-        self.transformer = transformer
-
-        self.transformer.load()
-        print("tf loaded")
-        self.json_path = json_path
-
-        print(f"[unitycarenv] connected to unity at {host}:{port}")
-
-    def send_reset_to_unity(self):
-        """
-        sends a reset command to unity to restart the simulation.
-        replace this stub with your actual communication logic.
-        """
-        message = "reset\n"
-        self.connection.sendall(message.encode())
-        print("[unitycarenv] sent reset command to unity.")
-
-    def send_action_to_unity(self, action):
-        """
-        sends the action command to unity.
-        action is expected to be a 3-dimensional vector: [steering, throttle, brake].
-        """
-        message = f"{action[0]},{action[1]},{action[2]}\n"
-        self.connection.sendall(message.encode())
-        print(f"[unitycarenv] sent action: {message.strip()}")
-
-    def receive_observation_from_unity(self):
-        buffer = ""
-        while "\n" not in buffer:
-            buffer += self.connection.recv(1024).decode('utf-8')
-        # split by newline and take the first complete message.
-        line, remainder = buffer.split('\n', 1)
-        # optionally, save 'remainder' for the next call.
-        raw_data = line.strip()
-        fields = raw_data.split(',')
-        sensor_data = {
+    def receive_state(self):
+        raw_data = self.client_socket.recv(1024).decode('utf-8').strip()
+        messages = raw_data.splitlines()
+        latest = messages[-1].strip()
+        fields = latest.split(',')
+        if len(fields) < 6:
+            raise ValueError("Incomplete state received, not enough fields.")
+        state = {
             "time": time.time(),
             "x_pos": float(fields[0]),
             "z_pos": float(fields[1]),
@@ -86,258 +53,224 @@ class UnityCarEnv:
             "long_vel": float(fields[3]),
             "lat_vel": float(fields[4]),
             "yaw_rate": float(fields[5]),
-            "steering": None,
-            "throttle": None,
-            "brake": None
+            "steering": 0.0,
+            "throttle": 0.0,
+            "brake": 0.0
         }
-        print(f"[unitycarenv] received sensor data: {sensor_data}")
-        return sensor_data
+        return state
 
-    def process_unity_observation(self, sensor_data):
-        """
-        processes raw sensor data along with track data to produce a processed state vector.
-        """
-        track_data = self.processor.build_track_data(self.json_path)
-        frame = self.processor.process_frame(sensor_data, track_data)
-
-        df_single = pd.DataFrame([frame])
-        df_features = df_single.drop(columns=["time","x_pos", "z_pos", "yaw_angle"])
-
-        df_trans = self.transformer.transform(df_features)
-        return df_trans.values[0].astype(np.float32)
-
-    def calculate_reward(self, sensor_data):
-        """
-        computes reward based on sensor data.
-        dummy function for the moment
-        """
-        reward = abs(sensor_data["v_x"])
-        return reward
-
-    def reset(self):
-        """
-        resets the unity simulation and returns the initial processed state.
-        """
-        self.current_step = 0
-        self.send_reset_to_unity()
-        time.sleep(0.1)  # allow time for unity to process the reset.
-        sensor_data = self.receive_observation_from_unity()
-        self.state = self.process_unity_observation(sensor_data)
-        return self.state
-
-    def step(self, action):
-        """
-        sends an action to unity, receives the next observation, computes the reward,
-        and returns the new state along with the done flag and diagnostic info.
-        """
-        self.current_step += 1
-        self.send_action_to_unity(action)
-        sensor_data = self.receive_observation_from_unity()
-        self.state = self.process_unity_observation(sensor_data)
-        reward = self.calculate_reward(sensor_data)
-        done = self.current_step >= self.max_episode_steps
-        return self.state, reward, done
+    def send_command(self, steering, throttle, brake):
+        message = f"{steering},{throttle},{brake}\n"
+        self.client_socket.sendall(message.encode())
 
     def close(self):
-        """
-        closes the connection to unity.
-        """
-        self.connection.close()
-        print("[unitycarenv] connection closed.")
+        self.client_socket.close()
+        self.server_socket.close()
+        print("[UnityEnv] Connection closed.")
 
-class PPOTransformerPolicy(nn.Module):
-    def __init__(self, state_dim, action_dim, d_model=192, nhead=4, num_layers=4, mlp_ratio=2.0, context_length=5):
-        super(PPOTransformerPolicy, self).__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.context_length = context_length
-        
-        # embed the state into a d_model-dimensional space.
-        self.input_fc = nn.Linear(state_dim, d_model)
-        # learnable positional embeddings.
-        self.pos_embedding = nn.Parameter(torch.zeros(context_length, d_model))
-        nn.init.normal_(self.pos_embedding, std=0.02)
-        
-        feedforward_dim = int(d_model * mlp_ratio)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=feedforward_dim)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # actor head: produces the mean of the gaussian for the action.
-        self.actor_head = nn.Linear(d_model, action_dim)
-        # critic head: outputs a scalar value for the state.
-        self.critic_head = nn.Linear(d_model, 1)
-        # learnable log standard deviation for the action distribution.
-        self.log_std = nn.Parameter(torch.zeros(action_dim))
-    
+class Actor:
+    """
+    Wraps a pretrained NNModel and its preprocessing to produce control outputs.
+    """
+    def __init__(self, processor, transformer, model_path=None, track_data=None, output_csv=None):
+        self.output_csv = output_csv
+        self.processor = processor
+        self.transformer = transformer
+        self.transformer.load()
+        self.nn_model = NNModel()
+        self.nn_model.load(model_path)
+        self.nn_model.eval()
+        self.track_data = track_data
+
+    def process(self, state):
+        frame = self.processor.process_frame(state, self.track_data)
+        df_single = pd.DataFrame([frame])
+        df_features = df_single.drop(columns=["time", "x_pos", "z_pos", "yaw_angle", "steering", "throttle", "brake"], errors='ignore')
+        df_trans = self.transformer.transform(df_features)
+        return df_features.astype(float), df_trans.astype(float)
+
+    def act(self, state, preprocessed=None):
+        if preprocessed is None:
+            preprocessed = self.process(state)
+        prediction = self.nn_model.predict(preprocessed)[0]
+        st_pred, th_pred, br_pred = prediction
+        if br_pred < 0.05:
+            br_pred = 0.0
+        return st_pred, th_pred, br_pred
+
+class Critic(nn.Module):
+    """
+    A simple feedforward network to estimate state value.
+    """
+    def __init__(self, input_size, hidden_layer_sizes=(20, 20)):
+        super(Critic, self).__init__()
+        layers = []
+        last_size = input_size
+        for hidden in hidden_layer_sizes:
+            layers.append(nn.Linear(last_size, hidden))
+            layers.append(nn.ReLU())
+            last_size = hidden
+        layers.append(nn.Linear(last_size, 1))
+        self.value_network = nn.Sequential(*layers)
+
     def forward(self, x):
-        """
-        x: [batch_size, state_dim]
-        we replicate the state to form a sequence of fixed length (context_length)
-        and then process it through the transformer.
-        """
-        if len(x.shape) == 1:
-            x = x.unsqueeze(0)  # [1, state_dim]
-            x = x.repeat(self.context_length, 1)  # [context_length, state_dim]
-        elif len(x.shape) == 2:
-            batch_size = x.size(0)
-            x = x.unsqueeze(1)  # [batch_size, 1, state_dim]
-            x = x.repeat(1, self.context_length, 1)  # [batch_size, context_length, state_dim]
-            x = x.transpose(0, 1)  # [context_length, batch_size, state_dim]
-        else:
-            raise valueerror("unsupported input shape")
-        
-        x = self.input_fc(x)  # [context_length, batch_size, d_model]
-        x = x + self.pos_embedding.unsqueeze(1)  # add positional embedding
-        x = self.transformer_encoder(x)  # [context_length, batch_size, d_model]
-        x = x[-1, :, :]  # use the last token's representation; shape: [batch_size, d_model]
-        
-        action_mean = self.actor_head(x)  # [batch_size, action_dim]
-        value = self.critic_head(x)       # [batch_size, 1]
-        std = self.log_std.exp().expand_as(action_mean)
-        return action_mean, value.squeeze(-1), std
+        return self.value_network(x)
 
-class PPOAgent:
-    def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, eps_clip=0.2, K_epochs=4, entropy_coef=0.01):
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        self.gamma = gamma              # Discount factor
-        self.eps_clip = eps_clip        # Clipping epsilon for PPO
-        self.K_epochs = K_epochs        # Number of epochs per update
+class PPO:
+    def __init__(self, actor, critic, actor_optimizer, critic_optimizer,
+                 clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.01,
+                 max_grad_norm=0.5, num_epochs=10, batch_size=64,
+                 gamma=0.99, lam=0.95, action_std=0.1, device='cpu'):
+        self.actor = actor
+        self.critic = critic
+        self.actor_optimizer = actor_optimizer
+        self.critic_optimizer = critic_optimizer
+        self.clip_param = clip_param
+        self.value_loss_coef = value_loss_coef
         self.entropy_coef = entropy_coef
+        self.max_grad_norm = max_grad_norm
+        self.num_epochs = num_epochs
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.lam = lam
+        self.action_std = action_std
+        self.device = device
 
-        self.policy = PPOTransformerPolicy(state_dim, action_dim)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
-        self.MseLoss = nn.MSELoss()
-        
-        # Memory to store transitions (on-policy)
-        # Each transition: (state, action, log_prob, reward, done)
-        self.memory = []
+    def evaluate_actions(self, states, actions):
+        mean_actions = self.actor.nn_model(states)
+        dist = torch.distributions.Normal(mean_actions, self.action_std)
+        log_probs = dist.log_prob(actions).sum(dim=-1)
+        entropy = dist.entropy().sum(dim=-1)
+        values = self.critic(states).squeeze(-1)
+        return log_probs, entropy, values
 
-    def select_action(self, state):
-        """
-        Given a state, sample an action from the policy's distribution.
-        Returns the action, its log probability, and the value estimate.
-        """
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)  # [1, state_dim]
-        with torch.no_grad():
-            action_mean, value, std = self.policy(state_tensor)
-        dist = distributions.Normal(action_mean, std)
-        action = dist.sample()
-        action_logprob = dist.log_prob(action).sum(dim=-1)
-        return action.detach().numpy()[0], action_logprob.detach(), value.detach()
+    def compute_gae(self, rewards, values, dones, next_value):
+        gae = 0
+        returns = []
+        values = values + [next_value]
+        for step in reversed(range(len(rewards))):
+            delta = rewards[step] + self.gamma * values[step+1] * (1 - dones[step]) - values[step]
+            gae = delta + self.gamma * self.lam * (1 - dones[step]) * gae
+            returns.insert(0, gae + values[step])
+        return returns
 
-    def store_transition(self, transition):
-        """
-        Store a transition tuple:
-        (state, action, log_prob, reward, done)
-        """
-        self.memory.append(transition)
-
-    def update(self):
-        """
-        Update the policy using the collected on-policy data.
-        This includes computing discounted returns and advantages,
-        then optimizing the PPO clipped objective with an entropy bonus.
-        """
-        # Convert lists of transitions into tensors.
-        states = torch.FloatTensor([t[0] for t in self.memory])
-        actions = torch.FloatTensor([t[1] for t in self.memory])
-        old_logprobs = torch.FloatTensor([t[2] for t in self.memory])
-        rewards = [t[3] for t in self.memory]
-        dones = [t[4] for t in self.memory]
-        
-        # Compute discounted rewards.
-        discounted_rewards = []
-        R = 0
-        for reward, done in zip(reversed(rewards), reversed(dones)):
-            if done:
-                R = 0
-            R = reward + self.gamma * R
-            discounted_rewards.insert(0, R)
-        discounted_rewards = torch.FloatTensor(discounted_rewards)
-        
-        # Evaluate the current policy for the stored states.
-        action_means, state_values, std = self.policy(states)
-        dist = distributions.Normal(action_means, std)
-        logprobs = dist.log_prob(actions).sum(dim=-1)
-        
-        # Calculate advantages.
-        advantages = discounted_rewards - state_values.detach()
+    def update(self, rollouts):
+        states = torch.FloatTensor(np.array(rollouts['states'])).to(self.device)
+        actions = torch.FloatTensor(np.array(rollouts['actions'])).to(self.device)
+        old_log_probs = torch.FloatTensor(np.array(rollouts['log_probs'])).to(self.device)
+        returns = torch.FloatTensor(np.array(rollouts['returns'])).to(self.device)
+        advantages = torch.FloatTensor(np.array(rollouts['advantages'])).to(self.device)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        
-        # Optimize policy for K epochs.
-        for _ in range(self.K_epochs):
-            action_means, state_values, std = self.policy(states)
-            dist = distributions.Normal(action_means, std)
-            logprobs = dist.log_prob(actions).sum(dim=-1)
-            ratios = torch.exp(logprobs - old_logprobs)
-            
-            # Clipped surrogate objective.
-            surr1 = ratios * advantages
-            surr2 = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages
-            policy_loss = -torch.min(surr1, surr2).mean()
-            
-            # Value function loss.
-            value_loss = self.MseLoss(state_values, discounted_rewards)
-            
-            # Entropy bonus to encourage exploration.
-            entropy_loss = -self.entropy_coef * dist.entropy().mean()
-            
-            # Total loss.
-            loss = policy_loss + 0.5 * value_loss + entropy_loss
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
-        
-        # Clear memory after the update.
-        self.memory = []
 
+        for _ in range(self.num_epochs):
+            indices = np.arange(len(states))
+            np.random.shuffle(indices)
+            for start in range(0, len(states), self.batch_size):
+                end = start + self.batch_size
+                mb_inds = indices[start:end]
+                mb_states = states[mb_inds]
+                mb_actions = actions[mb_inds]
+                mb_old_log_probs = old_log_probs[mb_inds]
+                mb_returns = returns[mb_inds]
+                mb_advantages = advantages[mb_inds]
 
-def train_rl(num_episodes=10, max_steps=1000):
-    """
-    Training loop that interacts with Unity through the environment,
-    collects transitions, and updates the PPO agent.
-    
-    Note: Assumes that a valid json_path is defined and that the processor
-    and transformer modules are properly implemented.
-    """
-    # Assume processor and transformer are imported from your modules.
-    processor = Processor()
-    transformer = FeatureTransformer()
-    
-    # Create the environment.
-    env = UnityCarEnv(processor, transformer)
-    
-    # For processed states, assume the dimension is 121.
-    state_dim = 121
-    action_dim = env.action_dim  # 3
-    agent = PPOAgent(state_dim, action_dim)
-    
-    episode_rewards = []
-    
-    for ep in range(num_episodes):
-        state = env.reset()
-        done = False
-        ep_reward = 0
-        steps = 0
+                log_probs, entropy, values = self.evaluate_actions(mb_states, mb_actions)
+                ratio = torch.exp(log_probs - mb_old_log_probs)
+                surr1 = ratio * mb_advantages
+                surr2 = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param) * mb_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+                value_loss = nn.MSELoss()(values, mb_returns.squeeze(-1))
+                loss = policy_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy.mean()
+
+                self.actor_optimizer.zero_grad()
+                loss.backward(retain_graph=True)
+                nn.utils.clip_grad_norm_(self.actor.nn_model.parameters(), self.max_grad_norm)
+                self.actor_optimizer.step()
+
+                self.critic_optimizer.zero_grad()
+                value_loss.backward()
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+                self.critic_optimizer.step()
+
+    def train(self, env, rollout_length=2048):
+        rollouts = {'states': [], 'actions': [], 'log_probs': [],
+                    'rewards': [], 'dones': [], 'values': []}
+        state = env.receive_state()
+        features, preprocessed = self.actor.process(state)
+        state_tensor = torch.FloatTensor(preprocessed.values).to(self.device)
         
-        while not done and steps < max_steps:
-            action, log_prob, value = agent.select_action(state)
-            next_state, reward, done = env.step(action)
-            agent.store_transition((state, action, log_prob, reward, done))
+        for step in range(rollout_length):
+            with torch.no_grad():
+                mean_action = self.actor.nn_model(state_tensor)
+                dist = torch.distributions.Normal(mean_action, self.action_std)
+                action = dist.sample()
+                log_prob = dist.log_prob(action).sum(dim=-1)
+                value = self.critic(state_tensor).squeeze(-1)
+            action = action.squeeze(0)
+            env.send_command(action[0].item(), action[1].item(), action[2].item())
+            next_state = env.receive_state()
+            done = 0  # Adjust if your environment signals episode end.
+            
+            rollouts['states'].append(state_tensor.cpu().squeeze(0).numpy())
+            rollouts['actions'].append(action.cpu().numpy())
+            rollouts['log_probs'].append(log_prob.cpu().numpy())
+            rollouts['dones'].append(done)
+            rollouts['values'].append(value.item())
+
             state = next_state
-            ep_reward += reward
-            steps += 1
+            features_new, preprocessed = self.actor.process(state)
+
+            reward = compute_reward(features, features_new)
+            rollouts['rewards'].append(reward)
+
+            features = features_new
+            state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
+
+        with torch.no_grad():
+            next_state_tensor = torch.FloatTensor(self.actor.process(state)[1].values.astype(np.float32)).to(self.device)
+            next_value = self.critic(next_state_tensor).item()
         
-        # Update policy after each episode.
-        agent.update()
-        episode_rewards.append(ep_reward)
-        print(f"Episode {ep+1}/{num_episodes}, Reward: {ep_reward}")
-    
-    env.close()
-    return episode_rewards
+        advantages = self.compute_gae(rollouts['rewards'], rollouts['values'], rollouts['dones'], next_value)
+        returns = advantages  # In practice, add the baseline values.
+        rollouts['advantages'] = advantages
+        rollouts['returns'] = returns
+
+        self.update(rollouts)
+        torch.save(actor.nn_model.state_dict(), "models/networks/updated_nn_model.pt")
 
 if __name__ == "__main__":
-    # To train the agent:
-    rewards_df = train_rl(num_episodes=10, max_steps=1000)
-    print(rewards_df)
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    
+    unity = UnityEnv(host='127.0.0.1', port=65432)
+    processor = Processor()
+    transformer = FeatureTransformer()
+    track_data = processor.build_track_data("sim/tracks/track17.json")
+    
+    actor = Actor(processor, transformer, model_path="models/networks/nn_model.pt", track_data=track_data)
+    actor.nn_model.to(device)
+    
+    sample_state = unity.receive_state()
+    frame_sample = processor.process_frame(sample_state, track_data)
+    df_sample = pd.DataFrame([frame_sample])
+    df_features_sample = df_sample.drop(columns=["time", "x_pos", "z_pos", "yaw_angle", "steering", "throttle", "brake"], errors='ignore')
+    df_trans_sample = transformer.transform(df_features_sample).astype(float)
+    input_size = df_trans_sample.shape[1]
+    print("Input feature size:", input_size)
+
+    critic = Critic(input_size=input_size, hidden_layer_sizes=(20,20)).to(device)
+    actor_optimizer = optim.Adam(actor.nn_model.parameters(), lr=3e-4)
+    critic_optimizer = optim.Adam(critic.parameters(), lr=3e-4)
+
+    ppo_agent = PPO(actor, critic, actor_optimizer, critic_optimizer, 
+                    clip_param=0.2, value_loss_coef=0.5, entropy_coef=0.01,
+                    max_grad_norm=0.5, num_epochs=10, batch_size=64,
+                    gamma=0.99, lam=0.95, action_std=0.1, device=device)
+    
+    try:
+        while True:
+            print("Collecting rollouts and updating policy...")
+            ppo_agent.train(unity, rollout_length=2048)
+    except Exception as e:
+        print(f"[Main] Error: {e}")
+    finally:
+        unity.close()

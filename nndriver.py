@@ -32,7 +32,6 @@ class NNModel(nn.Module):
                  hidden_layer_sizes=(26,20,12,8),
                  output_size=3,
                  alpha_value=0.001,
-                 learning_rate='adaptive',
                  learning_rate_init=0.1,
                  max_iter=100000,
                  tol=1e-6,
