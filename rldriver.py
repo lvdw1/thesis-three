@@ -29,7 +29,7 @@ def compute_reward(state, next_state):
     return progress - penalty
 
 def launch_sim():
-    subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
+    return subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
 
 class UnityEnv:
     """
@@ -42,7 +42,7 @@ class UnityEnv:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
         print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
-        launch_sim()
+        self.sim_process = launch_sim()
         self.client_socket, self.addr = self.server_socket.accept()
         print(f"[UnityEnv] Connection from {self.addr}")
 
@@ -81,9 +81,7 @@ class UnityEnv:
         try:
             self.client_socket.sendall(message.encode())
             print("[UnityEnv] Reset command sent.")
-            # Close the current connection after sending reset
             self.client_socket.close()
-            launch_sim()
             # Wait for Unity to reconnect (after scene reload)
             print("[UnityEnv] Waiting for Unity to reconnect after reset...")
             self.client_socket, self.addr = self.server_socket.accept()
