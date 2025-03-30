@@ -19,14 +19,13 @@ def compute_reward(state, next_state):
     dist_yel = next_state["yr12"].item()
     dist_bl = next_state["br12"].item()
 
-    if dist_yel < 0.5:
-        unity.send_reset()
-        print("i left the track")
-    if dist_bl < 0.5:
-        unity.send_reset()
-        print("i left the track")
-    penalty = 0.0
-    return progress - penalty
+    if dist_yel < 0.5 or dist_bl < 0.5:
+        penalty = -100
+        done = 1
+        return progress + penalty, done
+    else:
+        done = 0
+        return progress, done
 
 def launch_sim():
     return subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
@@ -43,6 +42,7 @@ class UnityEnv:
         self.server_socket.listen(5)
         print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
         self.sim_process = launch_sim()
+        self.sim_process = subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
         self.client_socket, self.addr = self.server_socket.accept()
         print(f"[UnityEnv] Connection from {self.addr}")
 
@@ -248,40 +248,49 @@ class PPO:
                 action = dist.sample()
                 log_prob = dist.log_prob(action).sum(dim=-1)
                 value = self.critic(state_tensor).squeeze(-1)
+            
             action = action.squeeze(0)
             env.send_command(action[0].item(), action[1].item(), action[2].item())
             next_state = env.receive_state()
-            done = 0  # Adjust if your environment signals episode end.
+            
+            # Compute reward and done flag
+            reward, done = compute_reward(features, self.actor.process(next_state)[0])
             
             rollouts['states'].append(state_tensor.cpu().squeeze(0).numpy())
             rollouts['actions'].append(action.cpu().numpy())
             rollouts['log_probs'].append(log_prob.cpu().numpy())
+            rollouts['rewards'].append(reward)
             rollouts['dones'].append(done)
             rollouts['values'].append(value.item())
 
-            state = next_state
-            features_new, preprocessed = self.actor.process(state)
+            # If early termination, break out of the loop.
+            if done:
+                print("Early termination triggered, breaking rollout.")
+                state = next_state
+                break
 
-            reward = compute_reward(features, features_new)
-            rollouts['rewards'].append(reward)
-
-            features = features_new
+            features, preprocessed = self.actor.process(next_state)
             state_tensor = torch.FloatTensor(preprocessed.values.astype(np.float32)).to(self.device)
-
-        with torch.no_grad():
-            next_state_tensor = torch.FloatTensor(self.actor.process(state)[1].values.astype(np.float32)).to(self.device)
-            next_value = self.critic(next_state_tensor).item()
+        
+        # For a terminated episode, the next state's value is zero.
+        if done:
+            next_value = 0.0
+        else:
+            with torch.no_grad():
+                next_state_tensor = torch.FloatTensor(self.actor.process(state)[1].values.astype(np.float32)).to(self.device)
+                next_value = self.critic(next_state_tensor).item()
         
         advantages = self.compute_gae(rollouts['rewards'], rollouts['values'], rollouts['dones'], next_value)
-        returns = advantages  # In practice, add the baseline values.
+        returns = advantages  # In practice, returns would be advantages plus baseline values.
         rollouts['advantages'] = advantages
         rollouts['returns'] = returns
 
-        self.update(rollouts)
-        actor.nn_model.save("models/networks/updated_nn_model.pt")
-        
-        unity.send_reset()
+        if len(returns) > 0:
+            total_discounted_reward = returns[0]
+            print("Total Discounted Reward for this run:", total_discounted_reward)
 
+        self.update(rollouts)
+        env.send_reset()
 
 if __name__ == "__main__":
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
