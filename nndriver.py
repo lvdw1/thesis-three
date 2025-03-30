@@ -215,7 +215,7 @@ class NNModel(nn.Module):
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
     
-    def save(self, path="models/networks/nn_model.pt"):
+    def save(self, path="models/networks/nn_model_corrected.pt"):
         if hasattr(self, 'feature_extractor') and self.feature_extractor is not None:
             # Save both model state and metadata
             state_dict = self.state_dict()
@@ -228,7 +228,7 @@ class NNModel(nn.Module):
             }
             torch.save({'state_dict': state_dict, 'metadata': metadata}, path)
     
-    def load(self, path="models/networks/nn_model.pt"):
+    def load(self, path="models/networks/nn_model_corrected.pt"):
         checkpoint = torch.load(path, map_location=self.device)
         
         # Load metadata
@@ -369,6 +369,7 @@ class NNDriver:
 
         try:
             while True:
+                prev_time = time.time()
                 raw_data = client_socket.recv(1024).decode('utf-8').strip()
                 if not raw_data:
                     break
@@ -399,6 +400,9 @@ class NNDriver:
                 if br_pred < 0.05:
                     br_pred = 0.0
                 message = f"{st_pred},{th_pred},{br_pred}\n"
+                curr_time = time.time()
+                print(curr_time-prev_time)
+                prev_time = curr_time
                 print(f"[Realtime] Sending: {message.strip()}")
                 client_socket.sendall(message.encode())
         except Exception as e:

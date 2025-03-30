@@ -4,6 +4,8 @@ import pandas as pd
 
 from utils import *
 
+from scipy.signal import savgol_filter
+
 class Processor:
     """
     Handles processing of raw sensor data.
@@ -35,7 +37,7 @@ class Processor:
         brake = sensor_data["brake"]
 
         # Shift car position to a lookahead point
-        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_angle, shift_distance=1.7)
+        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_angle, shift_distance=1.5)
 
         # Compute local acceleration (using previous frame if available)
         self.time_buffer.append(t)
@@ -198,4 +200,4 @@ class Processor:
             "ordered_yellow": ordered_yellow,
             "curvatures_all": curvatures_all,
             "track_widths_all": track_widths_all
-           }
+            }

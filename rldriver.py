@@ -6,6 +6,7 @@ import random
 import pandas as pd
 import socket
 import time
+import subprocess
 
 from utils import *
 from processor import *
@@ -18,11 +19,17 @@ def compute_reward(state, next_state):
     dist_yel = next_state["yr12"].item()
     dist_bl = next_state["br12"].item()
 
-    if dist_yel > 5.0 or dist_bl > 5.0:
-        penalty = 20.0
-    else:
-        penalty = 0.0
+    if dist_yel < 0.5:
+        unity.send_reset()
+        print("i left the track")
+    if dist_bl < 0.5:
+        unity.send_reset()
+        print("i left the track")
+    penalty = 0.0
     return progress - penalty
+
+def launch_sim():
+    subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
 
 class UnityEnv:
     """
@@ -35,6 +42,7 @@ class UnityEnv:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
         print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
+        launch_sim()
         self.client_socket, self.addr = self.server_socket.accept()
         print(f"[UnityEnv] Connection from {self.addr}")
 
@@ -60,11 +68,46 @@ class UnityEnv:
         return state
 
     def send_command(self, steering, throttle, brake):
-        message = f"{steering},{throttle},{brake}\n"
-        self.client_socket.sendall(message.encode())
+        message = f"{steering},{throttle},{0.0}\n"
+        print(f"Sending {steering}, {throttle}, {brake}")
+        try:
+            self.client_socket.sendall(message.encode())
+        except Exception as e:
+            print("[UnityEnv] Error sending command:", e)
+            self.reconnect()
+
+    def send_reset(self):
+        message = "reset\n"
+        try:
+            self.client_socket.sendall(message.encode())
+            print("[UnityEnv] Reset command sent.")
+            # Close the current connection after sending reset
+            self.client_socket.close()
+            launch_sim()
+            # Wait for Unity to reconnect (after scene reload)
+            print("[UnityEnv] Waiting for Unity to reconnect after reset...")
+            self.client_socket, self.addr = self.server_socket.accept()
+            print(f"[UnityEnv] Reconnected: {self.addr}")
+        except Exception as e:
+            print("[UnityEnv] Error sending reset command:", e)
+            self.reconnect()
+
+    def reconnect(self):
+        try:
+            if self.client_socket:
+                self.client_socket.close()
+        except Exception as e:
+            print("[UnityEnv] Error during reconnect cleanup:", e)
+        print("[UnityEnv] Waiting for Unity to reconnect...")
+        self.client_socket, self.addr = self.server_socket.accept()
+        print(f"[UnityEnv] Reconnected: {self.addr}")
 
     def close(self):
-        self.client_socket.close()
+        try:
+            if self.client_socket:
+                self.client_socket.close()
+        except:
+            pass
         self.server_socket.close()
         print("[UnityEnv] Connection closed.")
 
@@ -201,6 +244,7 @@ class PPO:
         
         for step in range(rollout_length):
             with torch.no_grad():
+                action = self.actor.nn_model(state_tensor)
                 mean_action = self.actor.nn_model(state_tensor)
                 dist = torch.distributions.Normal(mean_action, self.action_std)
                 action = dist.sample()
@@ -236,7 +280,10 @@ class PPO:
         rollouts['returns'] = returns
 
         self.update(rollouts)
-        torch.save(actor.nn_model.state_dict(), "models/networks/updated_nn_model.pt")
+        actor.nn_model.save("models/networks/updated_nn_model.pt")
+        
+        unity.send_reset()
+
 
 if __name__ == "__main__":
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
