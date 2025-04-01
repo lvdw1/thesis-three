@@ -20,21 +20,17 @@ class Evaluator:
     def compute_car_polygon(self, x, z, yaw):
         half_length = self.car_length / 2
         half_width = self.car_width / 2
-
         yaw = np.deg2rad(yaw)
-
         corners = np.array([
             [half_length, half_width],
             [half_length, -half_width],
             [-half_length, -half_width],
             [-half_length, half_width]
         ])
-
         R = np.array([
             [np.cos(yaw), -np.sin(yaw)],
             [np.sin(yaw),  np.cos(yaw)]
         ])
-
         rotated_corners = (R @ corners.T).T
         polygon = rotated_corners + np.array([x, z])
         return polygon
@@ -55,20 +51,14 @@ class Evaluator:
 
     def lap_timer(self, csv_path, json_path):
         df = self.read_csv(csv_path)
-
         times = df["time"]
         x_pos = df["x_pos"]
         z_pos = df["z_pos"]
-        yaw = df["yaw_angle"]
-
         track = processor.build_track_data(json_path)
-
         cones_blue = track["ordered_blue"]
         start_blue = cones_blue[0] 
-
         cones_yellow = track["ordered_yellow"]
         start_yellow = cones_yellow[0]
-
         cone_locations = np.concatenate([cones_blue, cones_yellow])
         
         def orientation(p, q, r):
@@ -220,7 +210,44 @@ class Evaluator:
 fs_eval = Evaluator(2, 10, 1, 2, 1)
 processor = processor.Processor()
 
+def plot(tracks):
+    avg_lap_times = []
+    std_lap_times = []
+    avg_corr_times = []
+    std_corr_times = []
+
+    for track in tracks:
+        # Adjust paths as needed to match your directory structure
+        csv_path = f"runs/processed/final/{track}.csv"
+        json_path = f"sim/tracks/{track}.json"
+        lap_times, corrected_lap_times = fs_eval.lap_timer(csv_path, json_path)
+        # Compute average and standard deviation for lap times and corrected lap times
+        avg_lap_times.append(np.mean(lap_times))
+        std_lap_times.append(np.std(lap_times))
+        avg_corr_times.append(np.mean(corrected_lap_times))
+        std_corr_times.append(np.std(corrected_lap_times))
+
+# Set up the grouped bar plot
+    x = np.arange(len(tracks))  # x locations for the tracks
+    width = 0.35  # width of the bars
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars1 = ax.bar(x - width/2, avg_lap_times, width, yerr=std_lap_times, capsize=5, label='Average Lap Time')
+    bars2 = ax.bar(x + width/2, avg_corr_times, width, yerr=std_corr_times, capsize=5, label='Corrected Lap Time')
+
+    ax.set_xlabel('Tracks')
+    ax.set_ylabel('Time (s)')
+    ax.set_title('Average Lap Times and Corrected Lap Times per Track')
+    ax.set_xticks(x)
+    ax.set_xticklabels(tracks)
+    ax.legend()
+
+    plt.tight_layout()
+    plt.show()
+
 # lap_time, corrected_lap_time = fs_eval.lap_timer("runs/processed/final/track11.csv", "sim/tracks/track11.json")
 # print(lap_time, corrected_lap_time)
 
-fs_eval.plot_animation("runs/processed/final/track11.csv", "sim/tracks/track11.json")
+# fs_eval.plot_animation("runs/processed/final/track11.csv", "sim/tracks/track11.json")
+tracks = ['track1', 'track2', 'track3', 'track4', 'track5', 'track6', 'track7', 'track8', 'track9', 'track10', 'track11', 'track13', 'track14', 'track15']
+plot(tracks)

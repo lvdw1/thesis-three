@@ -15,11 +15,9 @@ from nndriver import NNModel
 
 def compute_reward(state, next_state):
     progress = next_state["long_vel"].item()
-
     dist_yel = next_state["yr12"].item()
     dist_bl = next_state["br12"].item()
-
-    if dist_yel < 0.5 or dist_bl < 0.5:
+    if dist_yel < 0.75 or dist_bl < 0.75:
         penalty = -100
         done = 1
         return progress + penalty, done
