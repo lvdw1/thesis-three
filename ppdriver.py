@@ -23,11 +23,6 @@ class PPDriver:
         self.distance_stop = distance_stop
 
     def calculate_dynamic_lookahead(self, actual_speed):
-        """
-        Dynamically calculates the lookahead distance based on the current speed.
-        If the speed is below speed_start, use distance_start. If between, linearly interpolate.
-        If above speed_stop, use distance_stop.
-        """
         if actual_speed < self.speed_start:
             return self.distance_start
         elif actual_speed < self.speed_stop:
@@ -69,11 +64,6 @@ class PPDriver:
             return centerline[idx]
 
     def pure_pursuit_control(self, state, centerline):
-        """
-        Computes the steering angle using the pure pursuit algorithm.
-        state: dict containing current vehicle state, including "speed".
-        Returns a tuple: (normalized steering command in [-1, 1], target point).
-        """
         x_pos = state["x_pos"]
         z_pos = state["z_pos"]
         
