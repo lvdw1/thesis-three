@@ -67,5 +67,4 @@ def initial_guess(reference_track, N, dt, alpha_max, v_max, wheel_radius, wheelb
         ddelta[i] = (delta[i + 1] - delta[i]) / dt
     X0 = np.array([x, y, theta, delta, velocity, Tau0]).T
     U0 = np.array([acceleration / wheel_radius, ddelta, zeta]).T
-    print("DEBUG", X0)
     return X0, U0

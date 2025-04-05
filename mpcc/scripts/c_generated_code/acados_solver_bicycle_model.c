@@ -560,10 +560,6 @@ void bicycle_model_acados_setup_nlp_in(bicycle_model_solver_capsule* capsule, co
     double* lbx0 = lubx0;
     double* ubx0 = lubx0 + NBX0;
     // change only the non-zero elements:
-    lbx0[0] = -71.69;
-    ubx0[0] = -71.69;
-    lbx0[1] = -20.11;
-    ubx0[1] = -20.11;
 
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, 0, "idxbx", idxbx0);
     ocp_nlp_constraints_model_set(nlp_config, nlp_dims, nlp_in, 0, "lbx", lbx0);
@@ -897,8 +893,6 @@ void bicycle_model_acados_set_nlp_out(bicycle_model_solver_capsule* capsule)
     double* x0 = xu0;
 
     // initialize with x0
-    x0[0] = -71.69;
-    x0[1] = -20.11;
 
 
     double* u0 = xu0 + NX;
@@ -1051,7 +1045,7 @@ int bicycle_model_acados_update_params(bicycle_model_solver_capsule* capsule, in
 {
     int solver_status = 0;
 
-    int casadi_np = 848;
+    int casadi_np = 218;
     if (casadi_np != np) {
         printf("acados_update_params: trying to set %i parameters for external functions."
             " External function has %i parameters. Exiting.\n", np, casadi_np);

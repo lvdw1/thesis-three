@@ -41,7 +41,7 @@ class UnityEnv:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen(5)
         print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
-        self.sim_process = subprocess.Popen(["open", "../../unity/Simulator_WithTrackGeneration/sim_withReset.app"])
+        self.sim_process = subprocess.Popen(["open", "../../unity/Simulator_WithTrackGeneration/sim_fssim_00.app"])
         self.client_socket, self.addr = self.server_socket.accept()
         print(f"[UnityEnv] Connection from {self.addr}")
 
@@ -117,7 +117,7 @@ class MPCC:
     self.steering_pos_cmd = float(0.0)
     self.yaw = None
     self.t = time.time()
-    self.get_path("../../sim/tracks/track17.json")
+    self.get_path("../fssim_fsi2.json")
 
   def get_path(self, file_path):
     with open(file_path, "r") as f:
@@ -130,7 +130,7 @@ class MPCC:
     """
     # create ocp and add model
     ocp = AcadosOcp()
-    n = 848//2 # 49 for chicane, 109 for fssim_fsi, 173 for fsg24
+    n = 109 # 49 for chicane, 109 for fssim_fsi, 173 for fsg24
     # rospy.logerr(f"n: {n}")
     model, self.spline_function = export_bicycle_model(n)
     ocp.model = model
