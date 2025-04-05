@@ -8,8 +8,8 @@ from rldriver import UnityEnv, Processor, shift_position_single
 class MPCDriver:
     def __init__(self,
                  wheelbase=1.5,
-                 dt=0.02,            # Discretization time for the model
-                 horizon=100,        # Number of timesteps in the MPC horizon
+                 dt=0.1,            # Discretization time for the model
+                 horizon=20,        # Number of timesteps in the MPC horizon
                  max_steering_deg=45,
                  max_throttle=1.0,
                  max_brake=1.0):
@@ -89,12 +89,14 @@ class MPCDriver:
 
         # Weights (tune to your liking)
         W_pos = 50.0     # Position error weight
-        W_yaw = 10.0     # Heading error weight
-        W_v = 0.1       # Speed error weight
+        # W_yaw = 2.0     # Heading error weight
+        # W_v = 10       # Speed error weight
+
         W_delta = 20.0 # Steering usage weight (smooth steering)
-        W_a = 10.0      # Acceleration usage weight
-        W_ddelta = 50.0# Steering rate (smooth changes)
-        W_da = 10.0     # Acceleration rate
+        W_a = 1.0      # Acceleration usage weight
+
+        W_ddelta = 10.0# Steering rate (smooth changes)
+        W_da = 100     # Acceleration rate
 
         # Build the cost by iterating over the horizon
         # The first 4 entries of P are the current state
@@ -120,8 +122,8 @@ class MPCDriver:
 
             # Cost: track position (x,z), heading (yaw) optional, speed optional
             self.obj += W_pos * ((st_k[0] - x_ref)**2 + (st_k[1] - z_ref)**2)
-            self.obj += W_yaw * (st_k[2]**2)
-            self.obj += W_v * ((st_k[3] - 0.0)**2)  # Example: you might want to track a target speed
+            # self.obj += W_yaw * (st_k[2]**2)
+            # self.obj += W_v * ((st_k[3] - 0.0)**2)  # Example: you might want to track a target speed
 
             # Cost on controls
             self.obj += W_delta * (con_k[0]**2)  # steering
@@ -163,13 +165,13 @@ class MPCDriver:
         for _ in range(self.N+1):
             # x, z, yaw, v
             self.vars_lb += [-1e5, -1e5, -1e5, 0.0]  # might want v >= 0
-            self.vars_ub += [1e5, 1e5,  1e5, 50.0]   # or some max speed
+            self.vars_ub += [1e5, 1e5,  1e5, 100]   # or some max speed
 
         # U bounds
         for _ in range(self.N):
             # delta, a
             self.vars_lb += [-self.max_steering, -3.0]  # negative a for braking
-            self.vars_ub += [ self.max_steering,  3.0]
+            self.vars_ub += [ self.max_steering, 3.0]
 
         self.vars_lb = np.array(self.vars_lb, dtype=float)
         self.vars_ub = np.array(self.vars_ub, dtype=float)
@@ -253,12 +255,12 @@ class MPCDriver:
         # Something naive: if a_0 >= 0 => throttle, else => brake
         # You can do more advanced logic here.
         if a_0 >= 0:
-            throttle = np.clip(a_0 / 3.0, 0.0, self.max_throttle)
+            throttle = np.clip(a_0/3.0, 0.0, self.max_throttle)
             brake = 0.0
         else:
             throttle = 0.0
             # For example, negative acceleration -1 => 1/3 brake
-            brake = np.clip(-a_0 / 3.0, 0.0, self.max_brake)
+            brake = np.clip(-a_0/3.0, 0.0, self.max_brake)
 
         # Steering: convert from radians to [-1, 1] for a [-max_steering, max_steering] system
         steering = -delta_0 / self.max_steering
@@ -343,11 +345,11 @@ if __name__ == "__main__":
     # Initialize MPC Driver
     agent = MPCDriver(
         wheelbase=1.5,
-        dt=0.05,
-        horizon=10,
+        dt=0.1,
+        horizon=20,
         max_steering_deg=45,
-        max_throttle=1.0,
-        max_brake=1.0
+        max_throttle=3.0,
+        max_brake=3.0
     )
 
     run_data = []
@@ -373,8 +375,6 @@ if __name__ == "__main__":
                 "throttle": throttle,
                 "brake": brake
             })
-
-            time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("Terminating MPC agent and recording data...")

@@ -1,0 +1,39 @@
+mpcc_node:
+  pkg: mpcc
+  type: run_mpcc.py
+  name: mpcc
+  output: screen
+  respawn: true
+  # Arguments (e.g., turn_active can be set via an external argument)
+  args:
+    turn_active: false
+  parameters:
+    turn_active: false            # Passed from the 'turn_active' argument
+    rate: 25                      # Active function frequency in Hz
+    wheel_radius: 0.2032          # In meters
+    wheelbase: 1.5                # In meters
+    # MPCC cost parameters
+    ql: 1.0
+    qc: 0.02                      # Options: 0.01; 0.02; 0.5
+    ra: 0.00001
+    rs: 0.000000001
+    rz: 5.0
+    # Radius for the circular constraints
+    constraint_circle_radius: 0.8
+    # MPCC horizon parameters
+    N: 10
+    dt: 0.2
+    # Simple input constraints
+    alpha_min: -20
+    alpha_max: 20
+    phi_min: -3.0               # Alternative effective range could be -0.5 to 0.5
+    phi_max: 3.0
+    zeta_min: 0.001
+    zeta_max: 1.2
+    # Simple state constraints
+    delta_min: -45
+    delta_max: 45
+    v_min: 0
+    v_max: 15
+    tau_min: 0.000000001
+    tau_max: 2.0
