@@ -47,23 +47,45 @@ class UnityEnv:
     def receive_state(self):
         raw_data = self.client_socket.recv(1024).decode('utf-8').strip()
         messages = raw_data.splitlines()
-        latest = messages[-1].strip()
-        fields = latest.split(',')
-        if len(fields) < 6:
-            raise ValueError("Incomplete state received, not enough fields.")
-        state = {
-            "time": time.time(),
-            "x_pos": float(fields[0]),
-            "z_pos": float(fields[1]),
-            "yaw_angle": -float(fields[2]) + 90,
-            "long_vel": float(fields[3]),
-            "lat_vel": float(fields[4]),
-            "yaw_rate": float(fields[5]),
-            "steering": 0.0,
-            "throttle": 0.0,
-            "brake": 0.0
-        }
-        return state
+        # Iterate over messages in reverse order
+        for msg in reversed(messages):
+            msg = msg.strip()
+            fields = msg.split(',')
+            if len(fields) >= 6:
+                state = {
+                    "time": time.time(),
+                    "x_pos": float(fields[0]),
+                    "z_pos": float(fields[1]),
+                    "yaw_angle": -float(fields[2]) + 90,
+                    "long_vel": float(fields[3]),
+                    "lat_vel": float(fields[4]),
+                    "yaw_rate": float(fields[5]),
+                    "steering": 0.0,
+                    "throttle": 0.0,
+                    "brake": 0.0
+                }
+                return state
+        raise ValueError("Incomplete state received, not enough fields in any message.")
+    # def receive_state(self):
+    #     raw_data = self.client_socket.recv(1024).decode('utf-8').strip()
+    #     messages = raw_data.splitlines()
+    #     latest = messages[-1].strip()
+    #     fields = latest.split(',')
+    #     if len(fields) < 6:
+    #         raise ValueError("Incomplete state received, not enough fields.")
+    #     state = {
+    #         "time": time.time(),
+    #         "x_pos": float(fields[0]),
+    #         "z_pos": float(fields[1]),
+    #         "yaw_angle": -float(fields[2]) + 90,
+    #         "long_vel": float(fields[3]),
+    #         "lat_vel": float(fields[4]),
+    #         "yaw_rate": float(fields[5]),
+    #         "steering": 0.0,
+    #         "throttle": 0.0,
+    #         "brake": 0.0
+    #     }
+    #     return state
 
     def send_command(self, steering, throttle, brake):
         message = f"{steering},{throttle},{0.0}\n"

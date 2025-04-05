@@ -80,8 +80,24 @@ def plot_four_tracks(json_files):
     plt.tight_layout()
     plt.show()
 
-# List of four JSON files (modify the filenames as needed)
-json_files = ["track17.json", "track18.json", "track19.json", "track20.json"]
+def plot_single_track(json_file):
+    """
+    Plots cone data from a single JSON file in a single subplot.
 
-# Plot the four tracks
-plot_four_tracks(json_files)
+    Args:
+        json_file (str): JSON file path.
+    """
+    blue_cones, yellow_cones = parse_cone_data(json_file)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Track")
+    plt.tight_layout()
+    plt.show()
+
+# Main Code
+# If you want to plot a single track, use the plot_single_track function:
+json_file = "fsg_trackdrive_2024.json"
+plot_single_track(json_file)
+
+# If you want to plot four tracks, prepare a list of four JSON files and call plot_four_tracks:
+# json_files = ["track1.json", "track2.json", "track3.json", "track4.json"]
+# plot_four_tracks(json_files)
