@@ -474,33 +474,33 @@ void bicycle_model_acados_setup_nlp_in(bicycle_model_solver_capsule* capsule, co
     else
     {
         // set time_steps
-    double time_step = 0.1;
+    double time_step = 0.2;
         for (int i = 0; i < N; i++)
         {
             ocp_nlp_in_set(nlp_config, nlp_dims, nlp_in, i, "Ts", &time_step);
         }
         // set cost scaling
         double* cost_scaling = malloc((N+1)*sizeof(double));
-        cost_scaling[0] = 0.1;
-        cost_scaling[1] = 0.1;
-        cost_scaling[2] = 0.1;
-        cost_scaling[3] = 0.1;
-        cost_scaling[4] = 0.1;
-        cost_scaling[5] = 0.1;
-        cost_scaling[6] = 0.1;
-        cost_scaling[7] = 0.1;
-        cost_scaling[8] = 0.1;
-        cost_scaling[9] = 0.1;
-        cost_scaling[10] = 0.1;
-        cost_scaling[11] = 0.1;
-        cost_scaling[12] = 0.1;
-        cost_scaling[13] = 0.1;
-        cost_scaling[14] = 0.1;
-        cost_scaling[15] = 0.1;
-        cost_scaling[16] = 0.1;
-        cost_scaling[17] = 0.1;
-        cost_scaling[18] = 0.1;
-        cost_scaling[19] = 0.1;
+        cost_scaling[0] = 0.2;
+        cost_scaling[1] = 0.2;
+        cost_scaling[2] = 0.2;
+        cost_scaling[3] = 0.2;
+        cost_scaling[4] = 0.2;
+        cost_scaling[5] = 0.2;
+        cost_scaling[6] = 0.2;
+        cost_scaling[7] = 0.2;
+        cost_scaling[8] = 0.2;
+        cost_scaling[9] = 0.2;
+        cost_scaling[10] = 0.2;
+        cost_scaling[11] = 0.2;
+        cost_scaling[12] = 0.2;
+        cost_scaling[13] = 0.2;
+        cost_scaling[14] = 0.2;
+        cost_scaling[15] = 0.2;
+        cost_scaling[16] = 0.2;
+        cost_scaling[17] = 0.2;
+        cost_scaling[18] = 0.2;
+        cost_scaling[19] = 0.2;
         cost_scaling[20] = 1;
         for (int i = 0; i <= N; i++)
         {
@@ -595,8 +595,8 @@ void bicycle_model_acados_setup_nlp_in(bicycle_model_solver_capsule* capsule, co
     double* ubu = lubu + NBU;
     lbu[0] = -15;
     ubu[0] = 15;
-    lbu[1] = -1.5;
-    ubu[1] = 1.5;
+    lbu[1] = -1;
+    ubu[1] = 1;
     lbu[2] = 0.001;
     ubu[2] = 1.2;
 
@@ -624,8 +624,8 @@ void bicycle_model_acados_setup_nlp_in(bicycle_model_solver_capsule* capsule, co
     double* lubx = calloc(2*NBX, sizeof(double));
     double* lbx = lubx;
     double* ubx = lubx + NBX;
-    lbx[0] = -0.7853981633974483;
-    ubx[0] = 0.7853981633974483;
+    lbx[0] = -0.5235987755982988;
+    ubx[0] = 0.5235987755982988;
     ubx[1] = 12;
     lbx[2] = 0.000000001;
     ubx[2] = 2;
@@ -678,8 +678,8 @@ void bicycle_model_acados_setup_nlp_in(bicycle_model_solver_capsule* capsule, co
     double* lubx_e = calloc(2*NBXN, sizeof(double));
     double* lbx_e = lubx_e;
     double* ubx_e = lubx_e + NBXN;
-    lbx_e[0] = -0.7853981633974483;
-    ubx_e[0] = 0.7853981633974483;
+    lbx_e[0] = -0.5235987755982988;
+    ubx_e[0] = 0.5235987755982988;
     ubx_e[1] = 12;
     lbx_e[2] = 0.000000001;
     ubx_e[2] = 2;

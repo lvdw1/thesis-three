@@ -28,8 +28,6 @@ import json
 import socket
 import subprocess
 
-import os
-
 class UnityEnv:
     """
     Handles communication with Unity.
@@ -51,16 +49,18 @@ class UnityEnv:
         for msg in reversed(messages):
             msg = msg.strip()
             fields = msg.split(',')
-            if len(fields) >= 6:
+            if len(fields) >= 7:
                 state = {
                     "time": time.time(),
                     "x_pos": float(fields[0]),
                     "z_pos": float(fields[1]),
-                    "yaw_angle": -float(fields[2]) + 90,
+                    "yaw_angle": (-float(fields[2]) + 90)/180*np.pi,
                     "long_vel": float(fields[3]),
                     "lat_vel": float(fields[4]),
                     "yaw_rate": float(fields[5]),
+                    "steering_angle": float(fields[6])/180*np.pi
                 }
+                print("My steering angle was:", state["steering_angle"]*180/np.pi)
                 return state
         raise ValueError("Incomplete state received, not enough fields in any message.")
 
@@ -90,16 +90,16 @@ class MPCC:
     self.wheelbase = params.get("wheelbase", 1.5)
     self.constraint_circle_radius = params.get("constraint_circle_radius", 0.8)
     self.N = params.get("N", 20)
-    self.dt = params.get("dt", 0.1)
+    self.dt = params.get("dt", 0.2)
     self.alpha_min = params.get("alpha_min", -15.0)
     self.alpha_max = params.get("alpha_max", 15.0)
 
-    self.phi_min = params.get("phi_min", -1.5)
-    self.phi_max = params.get("phi_max", 1.5)
+    self.phi_min = params.get("phi_min", -1.0)
+    self.phi_max = params.get("phi_max", 1.0)
     self.zeta_min = params.get("zeta_min", 0.001)
     self.zeta_max = params.get("zeta_max", 1.2)
-    self.delta_min = params.get("delta_min", -45) * np.pi / 180
-    self.delta_max = params.get("delta_max", 45) * np.pi / 180
+    self.delta_min = params.get("delta_min", -30) * np.pi / 180
+    self.delta_max = params.get("delta_max", 30) * np.pi / 180
     self.v_min = params.get("v_min", 0)
     self.v_max = params.get("v_max", 12)
     self.tau_min = params.get("tau_min", 0.000000001)
@@ -114,7 +114,7 @@ class MPCC:
     self.mpcc_prepared = False
     self.drive_effort_cmd = float(0.0)
     self.steering_vel_cmd = float(0.0)
-    self.steering_pos_cmd = float(0.0)
+    # self.steering_pos_cmd = float(0.0)
     self.yaw = None
     self.t = time.time()
     self.get_path("../fssim_fsi2.json")
@@ -165,8 +165,7 @@ class MPCC:
     ocp.constraints.lbx_e = np.array([self.delta_min, self.v_min, self.tau_min])
     ocp.constraints.ubx_e = np.array([self.delta_max, self.v_max, self.tau_max])
     # current state TODO! -> give it actual values of the car!!
-    start_state = unity.receive_state()
-    ocp.constraints.x0 = np.array([start_state["x_pos"], start_state["z_pos"], 0.0, 0.0, 0.0, 0.0])
+    ocp.constraints.x0 = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     # set the ocp solver
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "EXACT"
@@ -194,6 +193,7 @@ class MPCC:
     y_pos = state["z_pos"]
     self.yaw = state["yaw_angle"]
     self.actual_speed = state["long_vel"]
+    self.steering_joint_angle = state["steering_angle"]
     # get current tau value (for now just set it to tau of the previous iteration,
     # might be a good assumption as you move very little in an iteration) TODO!
     # tau = self.x_sol[0, 5]
@@ -251,8 +251,8 @@ class MPCC:
       self.wheel_radius,
       self.wheelbase,
     )
-    print("The initial guess for x is:", self.x_guess)
-    print("The initial guess for u is:", self.u_guess)
+    # print("The initial guess for x is:", self.x_guess)
+    # print("The initial guess for u is:", self.u_guess)
     # save initial guess, the reference track and the spline function
     spline = create_spline_function(self.reference_track)
     spline_points = spline(ca.linspace(0, 1, 100).T).full().T
@@ -274,11 +274,9 @@ class MPCC:
     if self.mpcc_prepared:
       # set current state
       x0 = self.get_current_state()
+      print("x, y, yaw, steering, speed, tau")
       print("The received state from Unity is:", x0)
-      # if self.first_iteration:
-      #   x0[0] = -71
-      #   x0[1] = -20
-      # self.ocp_solver.set(0, "x", x0)
+      self.ocp_solver.set(0, "x", x0)
       self.ocp_solver.set(0, "lbx", x0)
       self.ocp_solver.set(0, "ubx", x0)
       # set initial guess
@@ -316,38 +314,60 @@ class MPCC:
       # send commands to controllers
       self.drive_effort_cmd = self.u_sol[0, 0]
       self.steering_vel_cmd = self.u_sol[0, 1]
-      self.steering_pos_cmd = self.x_sol[0, 3]
-
-      # I added this, not sure if this will create problems
-      self.steering_joint_angle = self.steering_pos_cmd
+      # self.steering_pos_cmd = self.x_sol[0, 3]
 
       # save solution
       filepath = FilePath(__file__).parents[1] / "validation" / "solution"
       np.savez(filepath, x_sol=self.x_sol, u_sol=self.u_sol)
       self.t = time.time()
 
+class Converter:
+    def __init__(self, dt):
+        self.dt = dt
+
+    def convert(self, steering_joint_angle, steering_vel, drive_effort):
+        print(f"[CONVERTER: COMMANDS] \n steering joint angle: {steering_joint_angle} \n steering velocity: {steering_vel} \n drive effort: {drive_effort}")
+        
+        #steering in rad
+        steering = steering_joint_angle + self.dt*steering_vel
+        steering = np.clip(steering, -np.pi/6, np.pi/6)
+
+        #steering normalized
+        steering = steering/(np.pi/6)
+        
+        if drive_effort > 0:
+            throttle = drive_effort/30
+            brake = 0.0
+
+        if drive_effort <= 0:
+            throttle = 0.0
+            brake = - drive_effort/30
+
+        print(f"[CONVERTER: RESULT] \n steering: {steering} \n throttle: {throttle} \n brake: {brake}")
+        return steering, throttle, brake
+
 if __name__ == "__main__": 
     unity = UnityEnv()
-
     mpcc = MPCC()
+    converter = Converter(mpcc.dt)
+
     try:
         while True:
             prev_time = time.time()
 
-            current_state = mpcc.get_current_state()
-
             mpcc.active()
 
-            steering = mpcc.steering_pos_cmd
-            throttle = mpcc.drive_effort_cmd
-            brake = 0.0
+            steering, throttle, brake = converter.convert(mpcc.steering_joint_angle, mpcc.steering_vel_cmd, mpcc.drive_effort_cmd)
 
-            unity.send_command(steering, throttle, brake)
+            unity.send_command(-steering, throttle, brake)
 
             curr_time = time.time()
             sol_time = curr_time - prev_time
-            print(sol_time)
-            prev_time = curr_time
+
+            if sol_time < 0.02:
+                time.sleep(0.02 - sol_time)
+            #     print("Paused for", 0.02 - sol_time + 0.02)
+
     except KeyboardInterrupt:
         print("Terminating & closing Unity connection")
     finally:

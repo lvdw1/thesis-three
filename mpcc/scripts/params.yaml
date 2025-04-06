@@ -9,7 +9,7 @@ mpcc_node:
     turn_active: false
   parameters:
     turn_active: false            # Passed from the 'turn_active' argument
-    rate: 25                      # Active function frequency in Hz
+    rate: 50                      # Active function frequency in Hz
     wheel_radius: 0.2032          # In meters
     wheelbase: 1.5                # In meters
     # MPCC cost parameters
@@ -24,16 +24,16 @@ mpcc_node:
     N: 10
     dt: 0.2
     # Simple input constraints
-    alpha_min: -20
-    alpha_max: 20
-    phi_min: -3.0               # Alternative effective range could be -0.5 to 0.5
-    phi_max: 3.0
+    alpha_min: -10
+    alpha_max: 10
+    phi_min: -0.5               # Alternative effective range could be -0.5 to 0.5
+    phi_max: 0.5
     zeta_min: 0.001
     zeta_max: 1.2
     # Simple state constraints
-    delta_min: -45
-    delta_max: 45
+    delta_min: -30
+    delta_max: 30
     v_min: 0
-    v_max: 15
+    v_max: 5
     tau_min: 0.000000001
     tau_max: 2.0
