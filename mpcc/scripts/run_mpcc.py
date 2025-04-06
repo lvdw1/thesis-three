@@ -350,6 +350,7 @@ if __name__ == "__main__":
     unity = UnityEnv()
     mpcc = MPCC()
     converter = Converter(mpcc.dt)
+    time.sleep(1)
 
     try:
         while True:
@@ -364,8 +365,9 @@ if __name__ == "__main__":
             curr_time = time.time()
             sol_time = curr_time - prev_time
 
-            if sol_time < 0.02:
-                time.sleep(0.02 - sol_time)
+            print(sol_time)
+            # if sol_time < 0.02:
+            #     time.sleep(0.02 - sol_time)
             #     print("Paused for", 0.02 - sol_time + 0.02)
 
     except KeyboardInterrupt:
