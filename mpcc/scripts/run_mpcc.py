@@ -349,8 +349,7 @@ class Converter:
 if __name__ == "__main__": 
     unity = UnityEnv()
     mpcc = MPCC()
-    converter = Converter(mpcc.dt)
-    time.sleep(1)
+    converter = Converter(0.02)
 
     try:
         while True:
@@ -366,9 +365,6 @@ if __name__ == "__main__":
             sol_time = curr_time - prev_time
 
             print(sol_time)
-            # if sol_time < 0.02:
-            #     time.sleep(0.02 - sol_time)
-            #     print("Paused for", 0.02 - sol_time + 0.02)
 
     except KeyboardInterrupt:
         print("Terminating & closing Unity connection")

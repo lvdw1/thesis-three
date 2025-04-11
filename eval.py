@@ -248,6 +248,6 @@ def plot(tracks):
 # lap_time, corrected_lap_time = fs_eval.lap_timer("runs/processed/final/track11.csv", "sim/tracks/track11.json")
 # print(lap_time, corrected_lap_time)
 
-# fs_eval.plot_animation("runs/processed/final/track11.csv", "sim/tracks/track11.json")
-tracks = ['track1', 'track2', 'track3', 'track4', 'track5', 'track6', 'track7', 'track8', 'track9', 'track10', 'track11', 'track13', 'track14', 'track15']
-plot(tracks)
+fs_eval.plot_animation("runs/processed/final/track11.csv", "sim/tracks/track11.json")
+# tracks = ['track1', 'track2', 'track3', 'track4', 'track5', 'track6', 'track7', 'track8', 'track9', 'track10', 'track11', 'track13', 'track14', 'track15']
+# plot(tracks)

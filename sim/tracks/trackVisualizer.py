@@ -89,15 +89,15 @@ def plot_single_track(json_file):
     """
     blue_cones, yellow_cones = parse_cone_data(json_file)
     fig, ax = plt.subplots(figsize=(8, 6))
-    plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Track")
+    plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Hard Layout")
     plt.tight_layout()
     plt.show()
 
 # Main Code
 # If you want to plot a single track, use the plot_single_track function:
-json_file = "fsg_trackdrive_2024.json"
+json_file = "validation/hard.json"
 plot_single_track(json_file)
 
 # If you want to plot four tracks, prepare a list of four JSON files and call plot_four_tracks:
-# json_files = ["track1.json", "track2.json", "track3.json", "track4.json"]
+# json_files = ["track5.json", "track6.json", "track7.json", "track8.json"]
 # plot_four_tracks(json_files)

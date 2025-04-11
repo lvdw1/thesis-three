@@ -8,7 +8,7 @@ from utils import read_csv_data
 
 from processor import Processor
 from transformer import FeatureTransformer
-from nndriver import NNModel, NNTrainer, NNDriver
+from nndriver_v2 import NNModel, NNTrainer, NNDriver
 from visualizer import Visualizer
 
 def main():
