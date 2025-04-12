@@ -26,7 +26,7 @@ def compute_reward(state, next_state):
         return progress, done
 
 def launch_sim():
-    return subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
+    return subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_normal.app"])
 
 class UnityEnv:
     """
@@ -40,7 +40,7 @@ class UnityEnv:
         self.server_socket.listen(5)
         print(f"[UnityEnv] Server listening on {self.host}:{self.port}...")
         self.sim_process = launch_sim()
-        self.sim_process = subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_withReset.app"])
+        self.sim_process = subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_normal.app"])
         self.client_socket, self.addr = self.server_socket.accept()
         print(f"[UnityEnv] Connection from {self.addr}")
 

@@ -1,6 +1,7 @@
 import json
 
-data = "../sim/tracks/track10.json"
+
+data = "../sim/tracks/validation/normal.json"
 with open(data, "r") as f:
     track = json.load(f)
 
@@ -26,5 +27,12 @@ result = {
         "centerline_y": track["centerline_y"],
         }
 
-with open("track10_adjusted.json", "w") as f:
-    json.dump(result, f, indent=4)
+result_folder = "adjusted/normal.json"
+# Save the result to a new JSON file
+try:
+    with open(result_folder, "w") as f:
+        json.dump(result, f, indent=4)
+    print(f"File saved successfully to {result_folder}")
+except Exception as e:
+    print(f"An error occurred while saving the file: {e}")
+

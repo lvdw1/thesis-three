@@ -102,15 +102,19 @@ if __name__ == "__main__":
     unity = UnityEnv(host='127.0.0.1', port=65432)
 
     processor = Processor()
-    track_data = processor.build_track_data("sim/tracks/track17.json")
-    centerline = track_data["centerline_pts"]
+    track_data = processor.build_track_data("sim/tracks/validation/normal.json")
+    min_curv_points = "sim/tracks/validation/normal_mincurv.json"
+    with open(min_curv_points) as f:
+        min_curv_points = json.load(f)
+    centerline = list(zip(min_curv_points["x"], min_curv_points["y"]))
+    # centerline = track_data["centerline_pts"]
     
     # Initialize Pure Pursuit Driver with dynamic lookahead parameters.
     # The base lookahead_distance is provided but will be adjusted dynamically.
     agent = PPDriver(lookahead_distance=4, wheelbase=1.5,
                      speed_start=10/3.6, speed_stop=50/3.6,
-                     distance_start=3, distance_stop=6)
-    
+                     distance_start=1.5, distance_stop=3)
+
     # Create an empty list to record run data.
     run_data = []
     try:
@@ -121,8 +125,9 @@ if __name__ == "__main__":
             # Compute steering using pure pursuit and also get the target point.
             steering, target_point = agent.pure_pursuit_control(state, centerline)
             
-            safety = 3
+            safety = 1.5
             throttle = (1-abs(steering))/safety
+            # throttle = 0.2
             brake = 0.0
             
             # Send control command to Unity.
@@ -147,37 +152,3 @@ if __name__ == "__main__":
         print("Terminating agent and recording data...")
     finally:
         unity.close()
-    
-    # Optionally, record the run data and create an animated plot.
-    # df = pd.DataFrame(run_data)
-    # csv_filename = "run_data.csv"
-    # df.to_csv(csv_filename, index=False)
-    # print(f"Run data written to {csv_filename}")
-    #
-    # fig, ax = plt.subplots(figsize=(10, 8))
-    # arrow_length = 2.0
-    # centerline_x = [pt[0] for pt in centerline]
-    # centerline_z = [pt[1] for pt in centerline]
-    #
-    # def animate(i):
-    #     ax.clear()
-    #     ax.plot(centerline_x, centerline_z, 'ko', markersize=3, label="Centerline")
-    #     ax.plot(df["x_pos"].iloc[:i+1], df["z_pos"].iloc[:i+1], 'b-', label="Car Trajectory")
-    #     car_x = df.iloc[i]["x_pos"]
-    #     car_z = df.iloc[i]["z_pos"]
-    #     ax.plot(car_x, car_z, 'bo', markersize=8, label="Car")
-    #     target_x = df.iloc[i]["target_x"]
-    #     target_z = df.iloc[i]["target_z"]
-    #     ax.plot(target_x, target_z, 'rx', markersize=10, label="Target Point")
-    #     yaw = m.radians(df.iloc[i]["yaw_angle"])
-    #     dx = m.cos(yaw) * arrow_length
-    #     dz = m.sin(yaw) * arrow_length
-    #     ax.arrow(car_x, car_z, dx, dz, head_width=0.5, head_length=0.5, fc='blue', ec='blue')
-    #     ax.set_xlabel("X Position")
-    #     ax.set_ylabel("Z Position")
-    #     ax.set_title(f"Recorded Run Animation - Frame {i}")
-    #     ax.legend()
-    #     ax.grid(True)
-    #
-    # ani = animation.FuncAnimation(fig, animate, frames=len(df), interval=200, repeat=False)
-    # plt.show()

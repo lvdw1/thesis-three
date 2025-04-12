@@ -432,7 +432,7 @@ class MinimumCurvature():
 
         export_trajectory = path_mincurv_cl.tolist()
 
-        with open("path_mincurv.json", "w") as f:
+        with open("normal_mincurv.json", "w") as f:
             json.dump(export_trajectory, f)
 
         self.calculate = False
@@ -441,7 +441,7 @@ class MinimumCurvature():
 if __name__ == "__main__":
     min_curvature = MinimumCurvature()
     min_curvature.doActivate()
-    min_curvature.receive_new_path("track10_adjusted.json")
-    min_curvature.receive_new_boundaries("track10_adjusted.json")
+    min_curvature.receive_new_path("tracks/adjusted/normal.json")
+    min_curvature.receive_new_boundaries("tracks/adjusted/normal.json")
     min_curvature.active()
 
