@@ -8,7 +8,7 @@ import json
 import math
 import logging
 import argparse
-import copy  # NEW: for copying model state during validation-based early stopping
+import copy  
 
 import numpy as np
 import pandas as pd
@@ -331,6 +331,10 @@ class NNTrainer:
             exclude_cols=["steering", "throttle", "brake"],
             pca_variance=pca_variance
         )
+
+        print(len(df_trans.columns), "features after PCA")
+
+
         if output_csv_path:
             df_trans.to_csv(output_csv_path, index=False)
             print(f"[NNTrainer] Processed CSV saved to {output_csv_path}")
