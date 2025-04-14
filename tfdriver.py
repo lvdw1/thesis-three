@@ -70,14 +70,14 @@ class TFModel(nn.Module):
     def __init__(self,
                  input_size,
                  seq_length=5,          # Number of frames (time steps) in each sequence
-                 d_model=16,             # Embedding dimension for transformer
-                 nhead=4,                # Number of attention heads
-                 num_encoder_layers=4,   # Number of transformer encoder layers
-                 dim_feedforward=64,     # Feedforward network size inside transformer encoder layers
+                 d_model=8,             # Embedding dimension for transformer
+                 nhead=2,                # Number of attention heads
+                 num_encoder_layers=2,   # Number of transformer encoder layers
+                 dim_feedforward=32,     # Feedforward network size inside transformer encoder layers
                  dropout=0.1,
                  output_size=3,          # Steering, throttle, brake
                  learning_rate_init=0.001,
-                 max_iter=50,
+                 max_iter=10,
                  tol=1e-6,
                  random_state=42,
                  verbose=True,
@@ -286,7 +286,7 @@ class TFModel(nn.Module):
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
     
-    def save(self, path="models/networks/transformer_v6.pt"):
+    def save(self, path="models/networks/transformer_v7.pt"):
         """
         Saves the model state along with important metadata.
         """
@@ -304,7 +304,7 @@ class TFModel(nn.Module):
         }
         torch.save({'state_dict': self.state_dict(), 'metadata': metadata}, path)
     
-    def load(self, path="models/networks/transformer_v6.pt"):
+    def load(self, path="models/networks/transformer_v7.pt"):
         """
         Loads the model state and metadata from a checkpoint.
         """
