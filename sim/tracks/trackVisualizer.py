@@ -89,13 +89,30 @@ def plot_single_track(json_file):
     """
     blue_cones, yellow_cones = parse_cone_data(json_file)
     fig, ax = plt.subplots(figsize=(8, 6))
-    plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Hard Layout")
+    plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Track 10")
     plt.tight_layout()
     plt.show()
 
+def plot_single_track_processed(json_file):
+    """
+    Plots cone data from a single JSON file in a single subplot.
+
+    Args:
+        json_file (str): JSON file path.
+    """
+    with open(json_file, 'r') as file:
+        data = json.load(file)
+    blue_cones = data["ordered_blue"]
+    yellow_cones = data["ordered_yellow"]
+    fig, ax = plt.subplots(figsize=(8, 6))
+    plot_cones_on_axis(ax, blue_cones, yellow_cones, title="Track 10 Mirrored")
+    plt.tight_layout()
+    plt.show()
 # Main Code
 # If you want to plot a single track, use the plot_single_track function:
-json_file = "validation/hard.json"
+json_file_mirrored = "track10_mirrored.json"
+json_file = "track10.json"
+plot_single_track_processed(json_file_mirrored)
 plot_single_track(json_file)
 
 # If you want to plot four tracks, prepare a list of four JSON files and call plot_four_tracks:
