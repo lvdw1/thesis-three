@@ -32,7 +32,7 @@ class NNModel(nn.Module):
                  hidden_layer_sizes=(26,20,12,8),
                  output_size=3,
                  alpha_value=0.001,
-                 learning_rate_init=0.1,
+                 learning_rate_init=0.001,
                  max_iter=100000,
                  tol=1e-6,
                  random_state=42,
@@ -215,7 +215,7 @@ class NNModel(nn.Module):
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
     
-    def save(self, path="models/networks/nn_model_corrected.pt"):
+    def save(self, path="models/networks/nn_model_corrected_doubled.pt"):
         if hasattr(self, 'feature_extractor') and self.feature_extractor is not None:
             # Save both model state and metadata
             state_dict = self.state_dict()
@@ -228,7 +228,7 @@ class NNModel(nn.Module):
             }
             torch.save({'state_dict': state_dict, 'metadata': metadata}, path)
     
-    def load(self, path="models/networks/nn_model_corrected.pt"):
+    def load(self, path="models/networks/nn_model_corrected_doubled.pt"):
         checkpoint = torch.load(path, map_location=self.device)
         
         # Load metadata

@@ -40,7 +40,7 @@ def main():
     transformer = FeatureTransformer()
     nn_model = NNModel()
     # Instantiate transformer-based model objects
-    tf = TFModel(69)
+    tf = TFModel(70)
 
     mode = args.mode.lower()
     use_postprocessed = (args.option.lower() == 'postprocessed')
@@ -109,11 +109,14 @@ def main():
 
     elif mode == "train":
         if not args.csv:
-            print("Must provide --csv for training.")
+            print("Must provide --csv for training the transformer model.")
             return
 
         # Expand wildcards in the training CSV pattern
         csv_files = glob.glob(args.csv)
+        mirrored_pattern = args.csv.replace('track', 'track*_mirrored')
+        csv_files += glob.glob(mirrored_pattern)
+        csv_files = list(set(csv_files))  # Remove duplicates
         if not csv_files:
             print(f"No CSV files match the pattern: {args.csv}")
             return
@@ -122,7 +125,6 @@ def main():
             training_dfs = [pd.read_csv(f) for f in csv_files]
         else:
             training_dfs = []
-            # For each CSV file, extract track number and process with corresponding JSON file
             for csv_file in csv_files:
                 filename = os.path.basename(csv_file)
                 match = re.search(r'track(\d+)', filename)
@@ -131,8 +133,10 @@ def main():
                 else:
                     print(f"Could not extract track number from {filename}, skipping.")
                     continue
-
-                json_file = args.json.replace('*', track_number)
+                if "mirrored" in filename.lower():
+                    json_file = args.json.replace('*', f"{track_number}_mirrored")
+                else:
+                    json_file = args.json.replace('*', track_number)
                 if not os.path.exists(json_file):
                     print(f"JSON file {json_file} not found for {csv_file}, skipping.")
                     continue
@@ -147,12 +151,11 @@ def main():
                 training_dfs.append(df_features)
 
         if not training_dfs:
-            print("No training data available, exiting.")
+            print("No training data available for transformer training, exiting.")
             return
 
-        # Concatenate all training DataFrames into a unified training dataset
         unified_training_data = pd.concat(training_dfs, ignore_index=True)
-        print(f"Unified training data shape: {unified_training_data.shape}")
+        print(f"Unified transformer training data shape: {unified_training_data.shape}")
 
         # Create the trainer and train on the unified DataFrame using the NN model.
         trainer = NNTrainer(processor, transformer, nn_model)
@@ -177,6 +180,9 @@ def main():
 
         # Expand wildcards in the training CSV pattern
         csv_files = glob.glob(args.csv)
+        mirrored_pattern = args.csv.replace('track', 'track*_mirrored')
+        csv_files += glob.glob(mirrored_pattern)
+        csv_files = list(set(csv_files))  # Remove duplicates
         if not csv_files:
             print(f"No CSV files match the pattern: {args.csv}")
             return
@@ -193,8 +199,11 @@ def main():
                 else:
                     print(f"Could not extract track number from {filename}, skipping.")
                     continue
-
-                json_file = args.json.replace('*', track_number)
+                if "mirrored" in filename.lower():
+                    json_file = args.json.replace('*', f"{track_number}_mirrored")
+                else:
+                    json_file = args.json.replace('*', track_number)
+                    json_file = args.json.replace('*', track_number)
                 if not os.path.exists(json_file):
                     print(f"JSON file {json_file} not found for {csv_file}, skipping.")
                     continue

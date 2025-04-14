@@ -34,8 +34,8 @@ class NNModel(nn.Module):
                  hidden_layer_sizes=(26,20,12,8),
                  output_size=3,
                  alpha_value=0.001,
-                 learning_rate_init=0.1,
-                 max_iter=100000,
+                 learning_rate_init=0.03,
+                 max_iter=10000,
                  tol=1e-6,
                  random_state=42,
                  verbose=True,
@@ -108,7 +108,7 @@ class NNModel(nn.Module):
     
     def train_model(self, df, y, df_val, y_val, input_cols=None, output_cols=None):
         """
-        Trains the NN model using full-batch gradient descent and validation-based early stopping.
+        Trains the NN model using full-batch gradient descent and validation-based LR reduction.
 
         Args:
             df (DataFrame): Training features.
@@ -122,16 +122,16 @@ class NNModel(nn.Module):
             input_cols = list(df.columns)
         self.input_cols = list(input_cols)
         self.input_size = len(self.input_cols)
-        
+
         # Store output_cols if provided
         self.output_cols = list(output_cols) if output_cols is not None else None
         self.output_size = y.shape[1]
-        
+
         # Initialize model architecture if not already done
         if not hasattr(self, 'feature_extractor') or self.feature_extractor is None:
             self._initialize_architecture()
             self.to(self.device)
-        
+
         # Convert data to PyTorch tensors (Training set)
         X = df[self.input_cols].values
         X_tensor = torch.FloatTensor(X).to(self.device)
@@ -141,14 +141,14 @@ class NNModel(nn.Module):
         X_val = df_val[self.input_cols].values
         X_val_tensor = torch.FloatTensor(X_val).to(self.device)
         y_val_tensor = torch.FloatTensor(y_val).to(self.device)
-        
+
         # Initialize weights for better convergence
         def init_weights(m):
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
                 nn.init.zeros_(m.bias)
         self.apply(init_weights)
-        
+
         # Initialize optimizer 
         self.optimizer = optim.SGD(
             self.parameters(),
@@ -157,21 +157,22 @@ class NNModel(nn.Module):
             weight_decay=self.alpha
         )
 
-        # Initialize the scheduler to watch validation loss
+        # Scheduler to automatically reduce learning rate on plateau,
+        # though we will also manually reduce it in the early stopping check.
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',         # We want to minimize the loss.
             factor=0.1,         # Multiply LR by this factor when triggered.
             patience=10,        # Number of epochs with no improvement (on val set) before LR is reduced.
         )
-        
+
         # Use MSE loss
         self.criterion = nn.MSELoss()
-        
+
         # Train the model
         self.train()  # Put in training mode
 
-        # Early stopping parameters
+        # Early stopping parameters (modified to only reduce LR, not break)
         patience = 10
         best_val_loss = float('inf')
         best_model_state = None
@@ -186,7 +187,7 @@ class NNModel(nn.Module):
             loss = self.criterion(outputs, y_tensor)
             loss.backward()
             self.optimizer.step()
-            
+
             # ----------------------
             # 2) Validation step
             # ----------------------
@@ -200,13 +201,10 @@ class NNModel(nn.Module):
             # 3) Scheduler update (based on val loss)
             # ----------------------
             scheduler.step(val_loss.item())
-            
+
             # ----------------------
-            # 4) Early stopping check
+            # 4) Monitor improvement and conditionally reduce LR
             # ----------------------
-            current_loss = loss.item()
-            self.loss_history.append(current_loss)
-            
             if val_loss.item() < best_val_loss - self.tol:
                 best_val_loss = val_loss.item()
                 best_model_state = copy.deepcopy(self.state_dict())
@@ -215,18 +213,18 @@ class NNModel(nn.Module):
                 epochs_no_improve += 1
 
             # Optionally print progress
-            if self.verbose and (epoch + 1) % 50 == 0:
+            if self.verbose and (epoch + 1) % 100 == 0:
                 current_lr = scheduler.optimizer.param_groups[0]['lr']
+                self.loss_history.append(loss.item())
                 print(f"Epoch [{epoch+1}/{self.max_iter}] | "
-                      f"Train Loss: {current_loss:.6f} | "
+                      f"Train Loss: {loss.item():.6f} | "
                       f"Val Loss: {val_loss.item():.6f} | "
                       f"LR: {current_lr:.6f}")
 
+            # Instead of early stopping, reduce learning rate manually if no improvement for 'patience' epochs
             if epochs_no_improve >= patience:
-                if self.verbose:
-                    print(f"Early stopping triggered at epoch {epoch+1} with val_loss={val_loss.item():.6f}")
                 break
-        
+
         # Restore the best model parameters (lowest validation loss)
         if best_model_state is not None:
             self.load_state_dict(best_model_state)
@@ -261,7 +259,7 @@ class NNModel(nn.Module):
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
     
-    def save(self, path="models/networks/nn_model_corrected_validation.pt"):
+    def save(self, path="nn_model_corrected_validation_double_005.pt"):
         if hasattr(self, 'feature_extractor') and self.feature_extractor is not None:
             # Save both model state and metadata
             state_dict = self.state_dict()
@@ -274,7 +272,7 @@ class NNModel(nn.Module):
             }
             torch.save({'state_dict': state_dict, 'metadata': metadata}, path)
     
-    def load(self, path="models/networks/nn_model_corrected_validation.pt"):
+    def load(self, path="nn_model_corrected_validation_double_005.pt"):
         checkpoint = torch.load(path, map_location=self.device)
         
         # Load metadata

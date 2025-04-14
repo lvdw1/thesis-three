@@ -35,7 +35,7 @@ class Processor:
         brake = sensor_data["brake"]
 
         # Shift car position to a lookahead point
-        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_angle, shift_distance=-1.7)
+        x_shifted, z_shifted = shift_position_single(car_x, car_z, yaw_angle, shift_distance=1.7)
 
         # Compute local acceleration (using previous frame if available)
         self.time_buffer.append(t)

@@ -1,8 +1,9 @@
 import math
 import numpy as np
 import pandas as pd
+import matplotlib
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
+
 
 from utils import *
 ###############################################
@@ -504,6 +505,15 @@ class Visualizer:
         # Read the actual and inferred CSV files
         df_actual = pd.read_csv(actual_csv_path)
         df_inferred = pd.read_csv(inferred_csv_path)
+
+        # mse = np.mean((df_actual['steering'] - df_inferred['steering']) ** 2 + (df_actual['throttle'] - df_inferred['throttle']) ** 2 + (df_actual['brake'] - df_inferred['brake']) ** 2)
+        # print(mse)
+        mse_steering = np.mean((df_actual['steering'] - df_inferred['steering']) ** 2)
+        print("steering:",mse_steering)
+        mse_throttle = np.mean((df_actual['throttle'] - df_inferred['throttle']) ** 2)
+        print("throttle:",mse_throttle)
+        mse_brake = np.mean((df_actual['brake'] - df_inferred['brake']) ** 2)
+        print("brake:",mse_brake)
 
         # Create subplots: one each for steering, throttle, and brake.
         fig, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)

@@ -69,10 +69,10 @@ class PositionalEncoding(nn.Module):
 class TFModel(nn.Module):
     def __init__(self,
                  input_size,
-                 seq_length=20,          # Number of frames (time steps) in each sequence
+                 seq_length=5,          # Number of frames (time steps) in each sequence
                  d_model=16,             # Embedding dimension for transformer
-                 nhead=2,                # Number of attention heads
-                 num_encoder_layers=2,   # Number of transformer encoder layers
+                 nhead=4,                # Number of attention heads
+                 num_encoder_layers=4,   # Number of transformer encoder layers
                  dim_feedforward=64,     # Feedforward network size inside transformer encoder layers
                  dropout=0.1,
                  output_size=3,          # Steering, throttle, brake
@@ -181,7 +181,7 @@ class TFModel(nn.Module):
         
         self.criterion = nn.MSELoss()
 
-        patience = 10
+        patience = 3
         best_val_loss = float('inf')
         best_model_state = None
         epochs_no_improve = 0
@@ -286,7 +286,7 @@ class TFModel(nn.Module):
     def get_loss(self):
         return self.loss_history[-1] if self.loss_history else float('inf')
     
-    def save(self, path="models/networks/transformer_v2.pt"):
+    def save(self, path="models/networks/transformer_v6.pt"):
         """
         Saves the model state along with important metadata.
         """
@@ -304,7 +304,7 @@ class TFModel(nn.Module):
         }
         torch.save({'state_dict': self.state_dict(), 'metadata': metadata}, path)
     
-    def load(self, path="models/networks/transformer_v2.pt"):
+    def load(self, path="models/networks/transformer_v6.pt"):
         """
         Loads the model state and metadata from a checkpoint.
         """
@@ -515,18 +515,18 @@ class TFDriver:
                     "throttle": None,
                     "brake": None
                 }
-                t0 = time.time()
+                # t0 = time.time()
                 frame = self.processor.process_frame(sensor_data, track_data)
-                t1 = time.time()
-                print(f"Processed frame in {t1 - t0:.4f} seconds")
+                # t1 = time.time()
+                # print(f"Processed frame in {t1 - t0:.4f} seconds")
                 all_frames.append(frame)
 
                 # Preprocess the frame (drop columns not used for prediction)
                 df_single = pd.DataFrame([frame])
                 df_features = df_single.drop(columns=["time", "x_pos", "z_pos", "yaw_angle"])
                 df_trans = self.transformer.transform(df_features)
-                t2 = time.time()
-                print(f"Transformed frame in {t2 - t1:.4f} seconds")
+                # t2 = time.time()
+                # print(f"Transformed frame in {t2 - t1:.4f} seconds")
                 
                 # Append the transformed row (as a dict) to the rolling buffer
                 self.buffer.append(df_trans.iloc[0].to_dict())
@@ -541,8 +541,8 @@ class TFDriver:
                     t3 = time.time() 
                     with torch.no_grad():
                         prediction_seq = self.tf_model(X_seq_tensor).cpu().numpy()[0]  # (seq_length, output_size)
-                    t4 = time.time()
-                    print(f"Predicted in {t4 - t3:.4f} seconds")
+                    # t4 = time.time()
+                    # print(f"Predicted in {t4 - t3:.4f} seconds")
                     # Use the last timestep's prediction for realtime control
                     st_pred, th_pred, br_pred = prediction_seq[-1]
                     if br_pred < 0.05:

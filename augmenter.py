@@ -2,6 +2,8 @@ import numpy as np
 import math
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
+import glob
 
 from utils import *
 from processor import Processor
@@ -216,18 +218,50 @@ class Augmenter:
 augmenter = Augmenter()
 processor = Processor()
 
-track = "sim/tracks/track10.json"
-track_data = augmenter.build_track_data(track)
-mirrored_track = augmenter.mirror_track(track_data)
-augmenter.save_track_data(mirrored_track, "sim/tracks/track10_mirrored.json")
+tracks_folder = "sim/tracks/base"
+mirorred_track_folder = "sim/tracks/mirrored"
+recordings_folder = "runs/training/final"
+processed_folder = "runs/processed/final"
 
-recording = "runs/training/final/track10.csv"
-augmented_recording = augmenter.mirror_recording(recording)
+track_files = glob.glob(os.path.join(tracks_folder, "*.json"))
 
-df_processed = processor.process_csv(augmented_recording, mirrored_track)
-df_processed.to_csv("runs/processed/final/track10_mirrored.csv", index=False)
+for track_file in track_files:
+    track_data = augmenter.build_track_data(track_file)
+    mirrored_track = augmenter.mirror_track(track_data)
+    
+    base_track_name = os.path.basename(track_file)  # e.g., "track10.json"
+    mirrored_track_name = base_track_name.replace(".json", "_mirrored.json")
+    mirrored_track_path = os.path.join(mirorred_track_folder, mirrored_track_name)
+    
+    augmenter.save_track_data(mirrored_track, mirrored_track_path)
+    print(f"Mirrored track saved to: {mirrored_track_path}")
+    
+    recording_name = base_track_name.replace(".json", ".csv")
+    recording_path = os.path.join(recordings_folder, recording_name)
+    
+    if os.path.exists(recording_path):
+        augmented_recording = augmenter.mirror_recording(recording_path)
+        
+        df_processed = processor.process_csv(augmented_recording, mirrored_track)
+        
+        processed_filename = base_track_name.replace(".json", "_mirrored.csv")
+        processed_path = os.path.join(processed_folder, processed_filename)
+        
+        df_processed.to_csv(processed_path, index=False)
+        print(f"Processed recording saved to: {processed_path}")
+
+# track = "sim/tracks/track10.json"
+# track_data = augmenter.build_track_data(track)
+# mirrored_track = augmenter.mirror_track(track_data)
+# augmenter.save_track_data(mirrored_track, "sim/tracks/track10_mirrored.json")
+#
+# recording = "runs/training/final/track10.csv"
+# augmented_recording = augmenter.mirror_recording(recording)
+#
+# df_processed = processor.process_csv(augmented_recording, mirrored_track)
+# df_processed.to_csv("runs/processed/final/track10_mirrored.csv", index=False)
 
 # df_processed = pd.read_csv("runs/processed/final/track10_mirrored.csv")
 
 # Visualize the augmented recording
-augmenter.visualize_absolute(df_processed, mirrored_track, heading_length=3.0)
+# augmenter.visualize_absolute(df_processed, mirrored_track, heading_length=3.0)
