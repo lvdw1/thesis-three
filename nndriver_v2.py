@@ -275,13 +275,19 @@ class NNModel(nn.Module):
     def load(self, path="nn_model_corrected_validation_double_005.pt"):
         checkpoint = torch.load(path, map_location=self.device)
         
+        if 'metadata' in checkpoint:
         # Load metadata
-        metadata = checkpoint['metadata']
-        self.input_cols = metadata['input_cols']
-        self.output_cols = metadata['output_cols']
-        self.input_size = metadata['input_size']
-        self.hidden_layer_sizes = metadata['hidden_layer_sizes']
-        self.loss_history = metadata.get('loss_history', [])
+            metadata = checkpoint['metadata']
+            self.input_cols = metadata['input_cols']
+            self.output_cols = metadata['output_cols']
+            self.input_size = metadata['input_size']
+            self.hidden_layer_sizes = metadata['hidden_layer_sizes']
+            self.loss_history = metadata.get('loss_history', [])
+        else:
+            self.input_cols = ["PC1", "PC2", "PC3", "PC4", "PC5", "PC6", "PC7", "PC8", "PC9", "PC10","PC11", "PC12", "PC13", "PC14", "PC15", "PC16", "PC17", "PC18", "PC19", "PC20", "PC21", "PC22", "PC23", "PC24", "PC25", "PC26", "PC27", "PC28", "PC29", "PC30", "PC31", "PC32", "PC33", "PC34", "PC35", "PC36", "PC37", "PC38", "PC39", "PC40", "PC41", "PC42", "PC43", "PC44", "PC45", "PC46", "PC47", "PC48", "PC49", "PC50", "PC51", "PC52", "PC53", "PC54", "PC55", "PC56", "PC57", "PC58", "PC59", "PC60", "PC61", "PC62", "PC63", "PC64", "PC65", "PC66", "PC67", "PC68", "PC69", "PC70"]
+            self.output_cols = ["steering", "throttle", "brake"]
+            self.input_size = 70
+            self.hidden_layer_sizes = [26,20,12,8]
         
         # Initialize architecture
         self._initialize_architecture()
