@@ -272,7 +272,7 @@ class NNModel(nn.Module):
             }
             torch.save({'state_dict': state_dict, 'metadata': metadata}, path)
     
-    def load(self, path="nn_model_corrected_validation_double_005.pt"):
+    def load(self, path="/Users/louis/code/thesis/models/rlmodels/2nd_gen/ppo_actor_900.pth"):
         checkpoint = torch.load(path, map_location=self.device)
         
         if 'metadata' in checkpoint:

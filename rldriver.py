@@ -1,4 +1,5 @@
 import numpy as np
+import math as m
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -13,17 +14,55 @@ from processor import *
 from transformer import *
 from nndriver_v2 import NNModel
 
-def compute_reward(state, next_state):
-    progress = next_state["long_vel"].item()
+def compute_reward(state, next_state, action):
+
+    steering = action[0].item()
+    throttle = action[1].item()
+    brake = action[2].item()
+
+    # factors for the reward function
+    speed_reward = 0.5
+
+    steering_punishment = 0.2
+
+    # Check for exceptions - termination conditions
     dist_yel = next_state["yr12"].item()
     dist_bl = next_state["br12"].item()
+
+    # Check if car is on the track, to prevent hitting cones
     if dist_yel < 0.75 or dist_bl < 0.75:
-        print("I left the track")
-        done = 1
+        done = 0
         return -100, done
+
+    # Avoid 180s
+    elif dist_yel == 20.0 and dist_bl == 20.0:
+        done = 0
+        return -300, done
+
+    # No exception happened, so we can just return an actual reward value
     else:
         done = 0
-        return progress, done
+        penalty = 0
+        reward = 0
+
+        # Reward speed
+        reward += next_state["long_vel"].item()**2*speed_reward
+        reward += next_state["ax"].item()**2 + next_state["ay"].item()**2
+
+        # # Crafting the brake
+        if brake == 0.0:
+            reward += 100
+        # else:
+        #     # reward += (m.exp(10*brake)-1)/(m.exp(10)-1)
+        #     reward += 0.0
+
+        # Penalize understeer
+        penalty += abs(steering)*steering_punishment
+
+        # Penalize jitter
+        # penalty += abs(next_state["steering"].item() - state["steering"])*jitter_punishment
+
+        return reward-penalty, done
 
 def launch_sim():
     return subprocess.Popen(["open", "unity/Simulator_WithTrackGeneration/sim_normal.app"])
@@ -277,7 +316,7 @@ class PPO:
             next_features, next_preprocessed = self.actor.process(next_state)
             
             # Compute reward and done flag
-            reward, done = compute_reward(features, next_features)
+            reward, done = compute_reward(features, next_features, action)
             
             rollouts['states'].append(state_tensor.cpu().squeeze(0).numpy())
             rollouts['actions'].append(action.cpu().numpy())
@@ -314,6 +353,7 @@ class PPO:
 
         self.update(rollouts)
         env.send_reset()
+
 if __name__ == "__main__":
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     
@@ -325,10 +365,10 @@ if __name__ == "__main__":
     # Initialize the Actor without loading imitation learning weights
     actor = Actor(processor, transformer, model_path="models/networks/nn_model_corrected_validation_double_005.pt", track_data=track_data)
     # Load PPO-trained actor checkpoint
-    actor_checkpoint = torch.load("models/rlmodels/second_gen/ppo_actor_350.pth", map_location=device)
-    actor.nn_model.load_state_dict(actor_checkpoint)
-    actor.nn_model.to(device)
-    actor.nn_model.train()  # Ensure the model is in training mode
+    # actor_checkpoint = torch.load("models/rlmodels/second_gen/ppo_actor_350.pth", map_location=device)
+    # actor.nn_model.load_state_dict(actor_checkpoint)
+    # actor.nn_model.to(device)
+    # actor.nn_model.train()  # Ensure the model is in training mode
     
     # Process a sample state to get input feature dimensions
     sample_state = unity.receive_state()
@@ -341,35 +381,36 @@ if __name__ == "__main__":
     
     # Initialize the Critic and load its PPO checkpoint if available
     critic = Critic(input_size=input_size, hidden_layer_sizes=(20,20)).to(device)
-    critic_checkpoint = torch.load("models/rlmodels/second_gen/ppo_critic_350.pth", map_location=device)
-    critic.load_state_dict(critic_checkpoint)
-    critic.train()  # Set to training mode
+    # critic_checkpoint = torch.load("models/rlmodels/second_gen/ppo_critic_350.pth", map_location=device)
+    # critic.load_state_dict(critic_checkpoint)
+    # critic.train()  # Set to training mode
     
     # Initialize optimizers and load their states if saved
     actor_optimizer = optim.Adam(actor.nn_model.parameters(), lr=1e-4)
     critic_optimizer = optim.Adam(critic.parameters(), lr=1e-4)
+
     # Optionally, load the optimizer states if you have saved them:
     # actor_optimizer.load_state_dict(torch.load("models/rlmodels/actor_optimizer_350.pth", map_location=device))
     # critic_optimizer.load_state_dict(torch.load("models/rlmodels/critic_optimizer_350.pth", map_location=device))
     
     ppo_agent = PPO(actor, critic, actor_optimizer, critic_optimizer, 
-                    clip_param=0.05, value_loss_coef=0.5, entropy_coef=0.01,
-                    max_grad_norm=0.5, num_epochs=20, batch_size=64,
-                    gamma=0.99, lam=0.95, steering_std=0.1, throttle_std=0.01, brake_std=0.01, device=device)
+                    clip_param=0.1, value_loss_coef=0.5, entropy_coef=0.01,
+                    max_grad_norm=0.5, num_epochs=50, batch_size=64,
+                    gamma=0.99, lam=0.95, steering_std=0.01, throttle_std=0.001, brake_std=0.00001, device=device)
     
     episode = 0
     try:
         while True:
             print("Collecting rollouts and updating policy...")
-            ppo_agent.train(unity, rollout_length=512)
+            ppo_agent.train(unity, rollout_length=4096)
             episode += 1
             if episode % 50 == 0:
                 # Save both actor and critic checkpoints along with optimizer states if desired.
                 torch.save(ppo_agent.actor.nn_model.state_dict(), f"models/rlmodels/ppo_actor_{episode}.pth")
                 torch.save(ppo_agent.critic.state_dict(), f"models/rlmodels/ppo_critic_{episode}.pth")
                 # Optionally, save optimizer states:
-                # torch.save(actor_optimizer.state_dict(), f"models/rlmodels/actor_optimizer_{episode}.pth")
-                # torch.save(critic_optimizer.state_dict(), f"models/rlmodels/critic_optimizer_{episode}.pth")
+                torch.save(actor_optimizer.state_dict(), f"models/rlmodels/actor_optimizer_{episode}.pth")
+                torch.save(critic_optimizer.state_dict(), f"models/rlmodels/critic_optimizer_{episode}.pth")
                 print(f"Checkpoint saved at episode {episode}")
     except Exception as e:
         print(f"[Main] Error: {e}")
