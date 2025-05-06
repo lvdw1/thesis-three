@@ -35,7 +35,8 @@ def main():
     parser.add_argument("--option", type=str, default="onthefly")
     args = parser.parse_args()
 
-    # Create common components for the pipeline
+
+    
     processor = Processor()
     transformer = FeatureTransformer()
     nn_model = NNModel()

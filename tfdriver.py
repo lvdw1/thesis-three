@@ -69,8 +69,8 @@ class PositionalEncoding(nn.Module):
 class TFModel(nn.Module):
     def __init__(self,
                  input_size,
-                 seq_length=5,          # Number of frames (time steps) in each sequence
-                 d_model=8,             # Embedding dimension for transformer
+                 seq_length=5,           # Number of frames (time steps) in each sequence
+                 d_model=8,              # Embedding dimension for transformer
                  nhead=2,                # Number of attention heads
                  num_encoder_layers=2,   # Number of transformer encoder layers
                  dim_feedforward=32,     # Feedforward network size inside transformer encoder layers
@@ -304,7 +304,7 @@ class TFModel(nn.Module):
         }
         torch.save({'state_dict': self.state_dict(), 'metadata': metadata}, path)
     
-    def load(self, path="models/networks/transformer_v7.pt"):
+    def load(self, path="models/networks/transformer_v6.pt"):
         """
         Loads the model state and metadata from a checkpoint.
         """
